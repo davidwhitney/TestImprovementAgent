@@ -8,6 +8,7 @@ export type PromptName =
   | 'create-test-project'
   | 'setup-coverlet'
   | 'scaffold-component-tests'
+  | 'triage-coverage'
   | 'raise-coverage'
   | 'fix-build'
   | 'fix-tests'

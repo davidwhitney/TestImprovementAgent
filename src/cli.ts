@@ -32,6 +32,7 @@ Options:
   --agent-binary <path>        override the agent executable
   --model <name>               model passed to the agent CLI
   --mutation-target <percent>  mutation score to reach (default ${DEFAULTS.mutationTarget})
+  --skip-triage                skip the agent planning step that orders coverage gaps quick-wins-first
   --skip-mutation              stop once coverage is met
   --manifest <file>            manifest path (default <src dir>/coverage-harness.manifest.json)
   --prompts <dir>              directory of prompt overrides (same file names as ./prompts)
@@ -85,6 +86,7 @@ const OPTIONS = {
   'agent-binary': { type: 'string' },
   model: { type: 'string' },
   'mutation-target': { type: 'string' },
+  'skip-triage': { type: 'boolean' },
   'skip-mutation': { type: 'boolean' },
   manifest: { type: 'string' },
   prompts: { type: 'string' },
@@ -190,6 +192,7 @@ async function main(): Promise<number> {
     coverageTool,
     strykerConcurrency: num(values['stryker-concurrency'], DEFAULTS.strykerConcurrency, 'stryker-concurrency', 1, 256),
     heartbeatMs: num(values.heartbeat, DEFAULTS.heartbeatMinutes, 'heartbeat', 0) * 60_000,
+    skipTriage: values['skip-triage'] ?? false,
     skipMutation: values['skip-mutation'] ?? false,
     verbose: values.verbose ?? false,
   };

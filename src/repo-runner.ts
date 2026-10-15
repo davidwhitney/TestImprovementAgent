@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { basename, join, relative } from 'node:path';
 import { parseHarnessReport, type HarnessReport } from './agents/index.ts';
 import { addUsage, formatUsage, type AgentAdapter } from './agents/types.ts';
@@ -26,6 +26,8 @@ export class HarnessStop extends Error {
 }
 
 const LOCAL_EXCLUDES = ['.coverage-harness/', 'StrykerOutput/', 'TestResults/', 'bin/', 'obj/'];
+const PLAN_FILE = 'coverage-plan.md';
+const PLAN_PROMPT_CHARS = 12_000;
 const MAX_CONSECUTIVE_AGENT_FAILURES = 3;
 
 export class RepoRunner {
@@ -247,10 +249,51 @@ export class RepoRunner {
     throw new HarnessStop('blocked', 'could not scaffold component tests');
   }
 
+  private get planPath(): string {
+    return join(this.workDir, PLAN_FILE);
+  }
+
+  /** The agent-written plan, ready to drop into a prompt; empty when there is none. */
+  private renderPlan(): string {
+    if (!existsSync(this.planPath)) return '';
+    const text = readFileSync(this.planPath, 'utf8').trim();
+    if (!text) return '';
+    const body = text.length > PLAN_PROMPT_CHARS ? `${text.slice(0, PLAN_PROMPT_CHARS)}\n…(truncated; the full plan is in \`.coverage-harness/${PLAN_FILE}\`)` : text;
+    return `## Coverage plan (quick wins first)\n\nThis plan was drawn up at the start of the run; it is also in \`.coverage-harness/${PLAN_FILE}\`.\n\n${body}`;
+  }
+
+  /**
+   * One read-only agent turn that orders the gaps quick-wins-first, so the loop gains the most coverage
+   * for the least effort early on and leaves the expensive long tail until last. Best effort: a missing
+   * plan just means the loop falls back to the largest gaps.
+   */
+  private async triage(green: Green): Promise<void> {
+    if (existsSync(this.planPath) && statSync(this.planPath).size > 0) return;
+    await this.setPhase('triage');
+    this.log.info('Planning: asking the agent to order the coverage gaps quick-wins-first');
+    const checkpoint = await this.git.head();
+    await this.runTask('triage-coverage', 'triage', {
+      coverage: green.coverage.branchPercent,
+      statementCoverage: green.coverage.statementPercent,
+      target: this.cfg.target,
+      componentProjects: testProjects(green.solution).filter((p) => p.hasComponentTests).map((p) => `\`${relative(this.repo, p.path)}\``).join(', ') || '(none detected)',
+      gaps: renderGaps(green.coverage, 40),
+    });
+    // Planning must not change the repo.
+    if ((await this.git.changedFiles(checkpoint)).length > 0 || !(await this.git.isClean())) await this.reset(checkpoint);
+    if (existsSync(this.planPath) && statSync(this.planPath).size > 0) {
+      this.log.info(`Coverage plan written to ${PLAN_FILE}`);
+      this.log.event('triage', { plan: this.planPath, chars: statSync(this.planPath).size });
+    } else {
+      this.log.warn('The agent did not write a coverage plan; continuing with the largest gaps first');
+    }
+  }
+
   private async coverageLoop(start: Green): Promise<Green> {
     let best = start;
     let stalls = 0;
     if (best.coverage.branchPercent >= this.cfg.target) return best;
+    if (!this.cfg.skipTriage) await this.triage(best);
     await this.setPhase('coverage');
 
     while (best.coverage.branchPercent < this.cfg.target) {
@@ -273,6 +316,7 @@ export class RepoRunner {
         componentProjects: testProjects(best.solution).filter((p) => p.hasComponentTests).map((p) => `\`${relative(this.repo, p.path)}\``).join(', ') || '(none detected)',
         gaps: renderGaps(best.coverage, 15),
         history: this.renderHistory('coverage'),
+        plan: this.renderPlan(),
       });
       await this.guard(checkpoint);
       const next = await this.stabilise(checkpoint, `coverage iteration ${iteration}`, label);

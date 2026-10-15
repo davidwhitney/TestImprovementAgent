@@ -33,6 +33,10 @@ Requires Node ≥ 22.18 (TypeScript runs directly through Node's type stripping,
  │  scaffold   │  → agent: scaffold-component-tests (fixture, stubs, seam map) → commit
  └─────┬───────┘
        ▼
+ ┌─────────────┐  once, before the loop (skip with --skip-triage):
+ │   triage    │  → agent: triage-coverage orders the gaps quick-wins-first into
+ └─────┬───────┘    .coverage-harness/coverage-plan.md (read-only: repo changes are discarded)
+       ▼
  ┌─────────────┐  loop until coverage ≥ target:
  │  coverage   │    write gap report → agent: raise-coverage → guard → measure
  │   loop      │    red → fix prompts (≤ N) → still red → git reset
@@ -93,7 +97,8 @@ Adding another CLI means implementing `AgentAdapter.invoke()` (one file) and reg
 |---|---|
 | `create-test-project.md` | the solution has no test project at all |
 | `scaffold-component-tests.md` | no component test project exists: maps the app's outside edges, builds the `WebApplicationFactory` fixture, stubs and seam-map README |
-| `raise-coverage.md` | each coverage iteration, with the top gaps inline and the history of previous iterations |
+| `triage-coverage.md` | once before the coverage loop: a read-only planning turn that ranks gaps by branches gained per unit effort and writes waves (quick wins first, long tail last) to `.coverage-harness/coverage-plan.md`. The plan survives restarts; delete it to re-plan |
+| `raise-coverage.md` | each coverage iteration, with the top gaps inline, the plan, and the history of previous iterations; works through the plan in order |
 | `fix-build.md` / `fix-tests.md` | the build or tests are red after any agent turn (or at baseline) |
 | `setup-stryker.md` | no Stryker tool manifest or root config |
 | `kill-mutants.md` | each mutation iteration, with surviving mutants (file, line, mutator, original → replacement) |
@@ -120,6 +125,7 @@ coverage-harness status --manifest <file>
 | `--agent` | `claude` | `claude`, `opencode`, `copilot` |
 | `--model` | CLI default | passed through to the agent |
 | `--mutation-target` | 80 | mutation score % required to mark a repo done |
+| `--skip-triage` | off | skip the planning step; the loop just takes the largest gaps |
 | `--skip-mutation` | off | finish once coverage is met |
 | `--concurrency` | 1 | repos processed in parallel |
 | `--retry` | off | re-run repos that are `blocked` / `stalled` / `error` |

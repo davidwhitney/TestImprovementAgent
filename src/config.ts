@@ -34,6 +34,8 @@ export interface HarnessConfig {
   strykerConcurrency: number;
   /** How often long-running steps (agent turns, dotnet test, Stryker) log a "still running" line. 0 disables. */
   heartbeatMs: number;
+  /** Skip the planning step that orders coverage gaps quick-wins-first before the coverage loop. */
+  skipTriage: boolean;
   skipMutation: boolean;
   verbose: boolean;
 }

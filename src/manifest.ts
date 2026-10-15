@@ -2,7 +2,7 @@ import { existsSync, readdirSync, readFileSync, renameSync, statSync, writeFileS
 import { basename, dirname, join, resolve } from 'node:path';
 
 export type RepoStatus = 'pending' | 'in-progress' | 'complete' | 'blocked' | 'stalled' | 'skipped' | 'error';
-export type Phase = 'prepare' | 'test-project' | 'baseline' | 'scaffold' | 'coverage' | 'stryker-setup' | 'mutation' | 'done';
+export type Phase = 'prepare' | 'test-project' | 'baseline' | 'scaffold' | 'triage' | 'coverage' | 'stryker-setup' | 'mutation' | 'done';
 
 import type { AgentUsage } from './agents/types.ts';
 
