@@ -25,17 +25,17 @@ describe('cobertura', () => {
     const merged = mergeCobertura(cobertura([[10, 0], [11, 0], [12, 3]]));
     mergeCobertura(cobertura([[10, 1], [11, 0], [12, 0]]), merged);
     const r = summarise(merged, '/repo', []);
-    assert.equal(r.coverable, 3);
-    assert.equal(r.covered, 2);
-    assert.equal(r.percent, 66.66);
+    assert.equal(r.statementCoverable, 3);
+    assert.equal(r.statementCovered, 2);
+    assert.equal(r.statementPercent, 66.66);
     assert.deepEqual(r.files[0]!.uncoveredByMethod, { 'OrderService.Create': [11] });
   });
 
   it('excludes entry-point files from the target but reports the raw figure', () => {
     const program = `<class name="Program" filename="src/App/Program.cs"><methods/><lines><line number="1" hits="0"/><line number="2" hits="0"/></lines></class>`;
     const r = summarise(mergeCobertura(cobertura([[10, 1]], program)), '/repo', ['/repo/src/App/Program.cs']);
-    assert.equal(r.percent, 100);
-    assert.equal(r.rawPercent, 33.33);
+    assert.equal(r.statementPercent, 100);
+    assert.equal(r.rawStatementPercent, 33.33);
     assert.deepEqual(r.excludedFiles, ['src/App/Program.cs']);
   });
 
@@ -43,8 +43,26 @@ describe('cobertura', () => {
     const gen = `<class name="Gen" filename="src/App/obj/Debug/Gen.g.cs"><methods/><lines><line number="1" hits="0"/></lines></class>
       <class name="App.X" filename="src/App/X.cs"><methods/><lines><line number="5" hits="1" branch="true" condition-coverage="50% (1/2)"/></lines></class>`;
     const r = summarise(mergeCobertura(cobertura([], gen)), '/repo', []);
-    assert.equal(r.coverable, 1);
+    assert.equal(r.statementCoverable, 1);
     assert.equal(r.branchPercent, 50);
+    assert.equal(r.branchCoverable, 2);
+  });
+
+  it('reports unexercised branches per method, worst files first, and treats no branches as fully covered', () => {
+    const branchy = `<class name="App.Svc" filename="src/App/Svc.cs"><methods><method name="Run" signature="()"><lines>
+      <line number="40" hits="2" branch="true" condition-coverage="50% (1/2)"/>
+      <line number="52" hits="0" branch="true" condition-coverage="0% (0/4)"/>
+      <line number="60" hits="1" branch="true" condition-coverage="100% (2/2)"/></lines></method></methods><lines/></class>`;
+    const r = summarise(mergeCobertura(cobertura([[10, 1]], branchy)), '/repo', []);
+    assert.equal(r.branchPercent, 37.5);
+    assert.deepEqual(r.files[0]!.missingBranchesByMethod, {
+      'Svc.Run': [
+        { line: 40, covered: 1, total: 2 },
+        { line: 52, covered: 0, total: 4 },
+      ],
+    });
+    assert.match(renderGaps(r), /`Svc\.Run` — 40 \(1\/2\), 52 \(0\/4\)/);
+    assert.equal(summarise(mergeCobertura(cobertura([[10, 1]])), '/repo', []).branchPercent, 100);
   });
 
   it('labels async state machines and nested types', () => {
@@ -55,9 +73,7 @@ describe('cobertura', () => {
 
   it('compresses line ranges and renders a gap table', () => {
     assert.equal(ranges([1, 2, 3, 7, 9, 10]), '1-3, 7, 9-10');
-    const md = renderGaps(summarise(mergeCobertura(cobertura([[10, 0], [11, 0]])), '/repo', []));
-    assert.match(md, /src\/App\/OrderService\.cs \| 0\/2 \| 2/);
-    assert.match(md, /`OrderService.Create` — lines 10-11/);
+    assert.match(renderGaps(summarise(mergeCobertura(cobertura([[10, 0]])), '/repo', [])), /No unexercised branches/);
   });
 });
 

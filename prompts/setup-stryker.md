@@ -1,6 +1,6 @@
 # Task: set up Stryker.NET mutation testing
 
-Repository `{{repoPath}}`, solution `{{solution}}`. Statement coverage has reached **{{coverage}}%**. Next, the harness will use mutation testing to find tests that execute code without really checking it. Set up Stryker.NET so the harness can run it.
+Repository `{{repoPath}}`, solution `{{solution}}`. Branch coverage has reached **{{coverage}}%**. Next, the harness will use mutation testing to find tests that execute code without really checking it. Set up Stryker.NET so the harness can run it.
 
 ## What to do
 

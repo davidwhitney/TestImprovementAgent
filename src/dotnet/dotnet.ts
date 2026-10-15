@@ -45,17 +45,51 @@ export async function build(sln: string, logFile: string, timeoutMs: number): Pr
 const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const escapeXml = (s: string) => s.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
 
+export const COVERAGE_TOOLS = ['microsoft', 'coverlet'] as const;
+export type CoverageTool = (typeof COVERAGE_TOOLS)[number];
+
+export interface RunSettingsAssemblies {
+  production: string[];
+  test: string[];
+}
+
+/** Harness-owned runsettings for the chosen coverage tool: the agent cannot weaken them. */
+export function writeRunSettings(path: string, tool: CoverageTool, assemblies: RunSettingsAssemblies): void {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, tool === 'coverlet' ? coverletRunSettings(assemblies.test) : microsoftRunSettings(assemblies.production));
+}
+
+/** Coverlet (`--collect "XPlat code coverage"`): test and third-party assemblies are excluded by name. */
+function coverletRunSettings(testAssemblyNames: string[]): string {
+  const exclude = ['[xunit*]*', '[NUnit*]*', ...testAssemblyNames.map((n) => `[${n}]*`)].join(',');
+  return `<?xml version="1.0" encoding="utf-8"?>
+<RunSettings>
+  <DataCollectionRunSettings>
+    <DataCollectors>
+      <DataCollector friendlyName="XPlat code coverage">
+        <Configuration>
+          <Format>cobertura</Format>
+          <Exclude>${escapeXml(exclude)}</Exclude>
+          <ExcludeByFile>**/obj/**,**/*.g.cs,**/*.Designer.cs</ExcludeByFile>
+          <ExcludeByAttribute>GeneratedCodeAttribute</ExcludeByAttribute>
+          <IncludeTestAssembly>false</IncludeTestAssembly>
+          <SkipAutoProps>true</SkipAutoProps>
+        </Configuration>
+      </DataCollector>
+    </DataCollectors>
+  </DataCollectionRunSettings>
+</RunSettings>
+`;
+}
+
 /**
- * Harness-owned runsettings for the built-in Microsoft code coverage collector (`--collect "Code Coverage"`,
+ * The built-in Microsoft code coverage collector (`--collect "Code Coverage"`,
  * which ships with Microsoft.NET.Test.Sdk, so no extra package is needed). The agent cannot weaken it, and
  * only production assemblies are instrumented: test projects and third-party packages never count.
  */
-export function writeRunSettings(path: string, productionAssemblyNames: string[]): void {
+function microsoftRunSettings(productionAssemblyNames: string[]): string {
   const modules = productionAssemblyNames.map((n) => `                <ModulePath>(^|.*[\\/])${escapeXml(escapeRegex(n))}\\.dll$</ModulePath>`).join('\n');
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(
-    path,
-    `<?xml version="1.0" encoding="utf-8"?>
+  return `<?xml version="1.0" encoding="utf-8"?>
 <RunSettings>
   <DataCollectionRunSettings>
     <DataCollectors>
@@ -78,7 +112,6 @@ ${modules}
             <Attributes>
               <Exclude>
                 <Attribute>^System\\.CodeDom\\.Compiler\\.GeneratedCodeAttribute$</Attribute>
-                <Attribute>^System\\.Runtime\\.CompilerServices\\.CompilerGeneratedAttribute$</Attribute>
                 <Attribute>^System\\.Diagnostics\\.DebuggerHiddenAttribute$</Attribute>
                 <Attribute>^System\\.Diagnostics\\.DebuggerNonUserCodeAttribute$</Attribute>
                 <Attribute>^System\\.Diagnostics\\.CodeAnalysis\\.ExcludeFromCodeCoverageAttribute$</Attribute>
@@ -90,16 +123,15 @@ ${modules}
     </DataCollectors>
   </DataCollectionRunSettings>
 </RunSettings>
-`,
-  );
+`;
 }
 
-export async function test(sln: string, opts: { runSettings: string; resultsDir: string; logFile: string; timeoutMs: number }): Promise<TestRunResult> {
+export async function test(sln: string, opts: { tool: CoverageTool; runSettings: string; resultsDir: string; logFile: string; timeoutMs: number }): Promise<TestRunResult> {
   rmSync(opts.resultsDir, { recursive: true, force: true });
   mkdirSync(opts.resultsDir, { recursive: true });
   const r: RunResult = await run(
     'dotnet',
-    ['test', sln, '--no-build', '--nologo', '--settings', opts.runSettings, '--results-directory', opts.resultsDir, '--logger', 'trx', '--collect', 'Code Coverage'],
+    ['test', sln, '--no-build', '--nologo', '--settings', opts.runSettings, '--results-directory', opts.resultsDir, '--logger', 'trx', '--collect', opts.tool === 'coverlet' ? 'XPlat code coverage' : 'Code Coverage'],
     { cwd: dirname(sln), logFile: opts.logFile, timeoutMs: opts.timeoutMs, env: { DOTNET_CLI_TELEMETRY_OPTOUT: '1', DOTNET_NOLOGO: '1' } },
   );
   const trxFiles = findFiles(opts.resultsDir, (f) => f.endsWith('.trx'), 3);

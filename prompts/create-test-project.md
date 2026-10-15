@@ -1,6 +1,6 @@
 # Task: create a test project
 
-The repository at `{{repoPath}}` is a .NET solution (`{{solution}}`) that has **no test project**. An automated harness is about to raise its test coverage and needs a test project to run. Coverage is collected by the harness with the built-in `dotnet test --collect "Code Coverage"` collector, so **do not add coverlet or any other coverage package**.
+The repository at `{{repoPath}}` is a .NET solution (`{{solution}}`) that has **no test project**. An automated harness is about to raise its test coverage and needs a test project to run. Coverage collection is set up by the harness separately, so **do not add coverlet or any other coverage package**.
 
 ## Current state
 

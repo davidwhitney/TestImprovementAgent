@@ -10,6 +10,9 @@ export interface HistoryEntry {
   iteration: number;
   outcome: string;
   coverage?: number;
+  /** Set on entries recorded since coverage switched to branch coverage; older entries hold statement figures. */
+  metric?: 'branch';
+  statementCoverage?: number;
   mutationScore?: number;
 }
 
@@ -21,8 +24,12 @@ export interface RepoEntry {
   solution?: string;
   branch?: string;
   baselineCoverage?: number;
+  /** Branch coverage %: the number the harness targets. */
   coverage?: number;
-  branchCoverage?: number;
+  statementCoverage?: number;
+  coverageMetric?: 'branch';
+  /** The collector that produced `coverage`; numbers from different tools are not comparable. */
+  coverageTool?: 'microsoft' | 'coverlet';
   mutationScore?: number;
   iterations: { coverage: number; mutation: number };
   agentInvocations: number;

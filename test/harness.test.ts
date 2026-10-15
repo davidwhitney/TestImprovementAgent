@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
+import { writeRunSettings } from '../src/dotnet/dotnet.ts';
 import { Git } from '../src/git.ts';
 import { enforceTestOnlyChanges } from '../src/guard.ts';
 import { discoverRepos, ManifestStore } from '../src/manifest.ts';
@@ -108,15 +109,35 @@ describe('production-code guard', () => {
   });
 });
 
+describe('coverage runsettings', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cov-'));
+  const assemblies = { production: ['App.Core'], test: ['App.Tests'] };
+
+  it('targets the Microsoft collector and includes only production assemblies', () => {
+    writeRunSettings(join(dir, 'ms.xml'), 'microsoft', assemblies);
+    const xml = readFileSync(join(dir, 'ms.xml'), 'utf8');
+    assert.match(xml, /friendlyName="Code Coverage"/);
+    assert.match(xml, /App\\\.Core/);
+    assert.doesNotMatch(xml, /App\.Tests/);
+  });
+
+  it('targets coverlet and excludes test assemblies', () => {
+    writeRunSettings(join(dir, 'cl.xml'), 'coverlet', assemblies);
+    const xml = readFileSync(join(dir, 'cl.xml'), 'utf8');
+    assert.match(xml, /friendlyName="XPlat code coverage"/);
+    assert.match(xml, /\[App\.Tests\]\*/);
+  });
+});
+
 describe('prompts', () => {
   const lib = new PromptLibrary();
   const vars = {
     repoPath: '/r', solution: 'App.sln', projectSummary: 'x', noTestProjectInstruction: 'x', previousAttempt: '', coverage: 10, target: 100,
-    componentProjectName: 'App.ComponentTests', componentProjectDir: 'tests/App.ComponentTests', iteration: 1, branchCoverage: 5,
+    componentProjectName: 'App.ComponentTests', componentProjectDir: 'tests/App.ComponentTests', iteration: 1, statementCoverage: 5,
     componentProjects: 'x', gaps: 'GAPS', history: '', context: 'x', errors: 'E', notes: '', failures: 'F', testProjects: 'x',
     mutationTarget: 80, mutationScore: 40, survivors: 'S', question: 'Q?',
   };
-  const names: PromptName[] = ['create-test-project', 'scaffold-component-tests', 'raise-coverage', 'fix-build', 'fix-tests', 'setup-stryker', 'kill-mutants', 'continue', 'answer'];
+  const names: PromptName[] = ['create-test-project', 'setup-coverlet', 'scaffold-component-tests', 'raise-coverage', 'fix-build', 'fix-tests', 'setup-stryker', 'kill-mutants', 'continue', 'answer'];
 
   for (const name of names) {
     it(`renders ${name} with every placeholder and partial resolved`, () => {

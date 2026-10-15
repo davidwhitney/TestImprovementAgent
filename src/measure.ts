@@ -1,8 +1,8 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { loadCoverage, renderGaps, type CoverageReport } from './coverage/cobertura.ts';
-import { build, renderFailures, test, writeRunSettings } from './dotnet/dotnet.ts';
-import { entryPointFiles, loadSolution, productionProjects, type Solution } from './dotnet/projects.ts';
+import { build, renderFailures, test, writeRunSettings, type CoverageTool } from './dotnet/dotnet.ts';
+import { entryPointFiles, loadSolution, productionProjects, testProjects, type Solution } from './dotnet/projects.ts';
 import type { TestSummary } from './dotnet/trx.ts';
 import { withHeartbeat, type Logger } from './util/log.ts';
 
@@ -17,6 +17,7 @@ export interface MeasureOptions {
   workDir: string;
   buildTimeoutMs: number;
   testTimeoutMs: number;
+  coverageTool: CoverageTool;
   log: Logger;
   /** Log a "still running" line this often during build/test (0 disables). */
   heartbeatMs?: number;
@@ -44,10 +45,13 @@ export async function measure(opts: MeasureOptions, label: string): Promise<Meas
   }
 
   const runSettings = join(workDir, 'coverage.runsettings');
-  writeRunSettings(runSettings, productionProjects(solution).map((p) => p.assemblyName));
-  log.info(`[${label}] dotnet test (code coverage)`);
+  writeRunSettings(runSettings, opts.coverageTool, {
+    production: productionProjects(solution).map((p) => p.assemblyName),
+    test: testProjects(solution).map((p) => p.assemblyName),
+  });
+  log.info(`[${label}] dotnet test (${opts.coverageTool} coverage)`);
   const t = await withHeartbeat(log, `[${label}] dotnet test`, heartbeat, () =>
-    test(opts.solutionPath, { runSettings, resultsDir: join(workDir, 'runs', label), logFile, timeoutMs: opts.testTimeoutMs }),
+    test(opts.solutionPath, { tool: opts.coverageTool, runSettings, resultsDir: join(workDir, 'runs', label), logFile, timeoutMs: opts.testTimeoutMs }),
   );
   if (!t.ok) {
     log.event('measure', {
@@ -66,7 +70,7 @@ export async function measure(opts: MeasureOptions, label: string): Promise<Meas
   }
 
   if (t.coberturaFiles.length === 0) {
-    const infrastructureError = 'dotnet test passed but produced no Cobertura coverage report. Every test project needs a recent Microsoft.NET.Test.Sdk (17.x or later), which carries the code coverage collector, and the production assemblies must be built with symbols (DebugType portable or full).';
+    const infrastructureError = `dotnet test passed but produced no Cobertura coverage report. Every test project needs ${opts.coverageTool === 'coverlet' ? 'the coverlet.collector package' : 'a recent Microsoft.NET.Test.Sdk (17.x or later), which carries the code coverage collector'}, and the production assemblies must be built with symbols (DebugType portable or full).`;
     log.event('measure', { label, result: 'tests-failed', infrastructureError, durationMs: Date.now() - started });
     writeFileSync(join(workDir, 'failing-tests.md'), `# Failing tests\n\n\`\`\`\n${infrastructureError}\n\`\`\`\n`);
     log.warn(`[${label}] no coverage report produced`);
@@ -79,12 +83,14 @@ export async function measure(opts: MeasureOptions, label: string): Promise<Meas
     join(workDir, 'coverage-summary.json'),
     JSON.stringify(
       {
-        percent: coverage.percent,
         branchPercent: coverage.branchPercent,
-        covered: coverage.covered,
-        coverable: coverage.coverable,
+        branchCovered: coverage.branchCovered,
+        branchCoverable: coverage.branchCoverable,
+        statementPercent: coverage.statementPercent,
+        statementCovered: coverage.statementCovered,
+        statementCoverable: coverage.statementCoverable,
         excludedFiles: coverage.excludedFiles,
-        files: coverage.files.map((f) => ({ path: f.relPath, covered: f.covered, coverable: f.coverable, uncoveredByMethod: f.uncoveredByMethod })),
+        files: coverage.files.map((f) => ({ path: f.relPath, branchCovered: f.branchCovered, branchCoverable: f.branchCoverable, missingBranchesByMethod: f.missingBranchesByMethod, statementCovered: f.covered, statementCoverable: f.coverable, uncoveredByMethod: f.uncoveredByMethod })),
       },
       null,
       2,
@@ -95,12 +101,12 @@ export async function measure(opts: MeasureOptions, label: string): Promise<Meas
     result: 'green',
     total: t.summary.total,
     passed: t.summary.passed,
-    coverage: coverage.percent,
-    covered: coverage.covered,
-    coverable: coverage.coverable,
-    branchCoverage: coverage.branchPercent,
+    coverage: coverage.branchPercent,
+    branchCovered: coverage.branchCovered,
+    branchCoverable: coverage.branchCoverable,
+    statementCoverage: coverage.statementPercent,
     durationMs: Date.now() - started,
   });
-  log.info(`[${label}] ${t.summary.passed}/${t.summary.total} tests passed; statement coverage ${coverage.percent}% (${coverage.covered}/${coverage.coverable}), branch ${coverage.branchPercent}%`);
+  log.info(`[${label}] ${t.summary.passed}/${t.summary.total} tests passed; branch coverage ${coverage.branchPercent}% (${coverage.branchCovered}/${coverage.branchCoverable}), statement ${coverage.statementPercent}%`);
   return { kind: 'green', tests: t.summary, coverage, solution };
 }

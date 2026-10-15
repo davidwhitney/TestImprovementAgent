@@ -1,6 +1,6 @@
 # dotnet-coverage-harness
 
-A small meta-harness that drives agentic coding CLIs (Claude Code, OpenCode, GitHub Copilot CLI) in a long-running loop to raise **statement coverage** of .NET solutions to a target, using **outside-in component tests**, and then raise the **mutation score** with Stryker.NET.
+A small meta-harness that drives agentic coding CLIs (Claude Code, OpenCode, GitHub Copilot CLI) in a long-running loop to raise **branch coverage** of .NET solutions to a target, using **outside-in component tests**, and then raise the **mutation score** with Stryker.NET.
 
 The harness has no model of its own. It is the deterministic shell around the agent: it discovers solutions, builds, tests, measures coverage, decides what to ask for next, enforces the rules, and commits or reverts each iteration. The agent only writes test code.
 
@@ -57,8 +57,8 @@ Requires Node ≥ 22.18 (TypeScript runs directly through Node's type stripping,
 |---|---|---|
 | Repo discovery, manifest | `src/manifest.ts` | `--src dir/*` = every git repo directly inside `dir`. Manifest defaults to `<dir>/coverage-harness.manifest.json`; atomic writes, serialised across parallel workers. |
 | Solution discovery | `src/dotnet/projects.ts` | Shallowest `.sln`/`.slnx`, preferring the repo's name, then the one with most projects. Test projects are classified from their project files. |
-| Build / test | `src/dotnet/dotnet.ts` | `dotnet build`, then `dotnet test --no-build --collect "Code Coverage" --logger trx` using the collector built into Microsoft.NET.Test.Sdk (no coverlet or other package needed), with a **harness-owned runsettings** that instruments production assemblies only and emits Cobertura (agents can't weaken exclusions). |
-| Coverage | `src/coverage/cobertura.ts` | Cobertura reports from every test project are merged per line (max hits). The target is statement (line/sequence-point) coverage. `Program.cs`/`Main` of executable projects is excluded from the target, as allowed; the raw figure is still computed. Gaps are grouped by method (async state machines resolved to their source method). |
+| Build / test | `src/dotnet/dotnet.ts` | `dotnet build`, then `dotnet test --no-build --collect "Code Coverage" --logger trx` with a **harness-owned runsettings** that emits Cobertura (agents can't weaken exclusions). Two coverage strategies, chosen with `--coverage-tool`: `microsoft` (default; `--collect "Code Coverage"`, built into Microsoft.NET.Test.Sdk, no extra package, only production assemblies instrumented) and `coverlet` (`--collect "XPlat code coverage"`; the harness has the agent add `coverlet.collector` to any test project missing it). Numbers from different tools differ, so switching tool restarts the coverage baseline. |
+| Coverage | `src/coverage/cobertura.ts` | Cobertura reports from every test project are merged per line (max hits). The target is branch coverage, and statement coverage is reported alongside it everywhere (iteration logs, commit messages, events, the status table, the manifest); manifests recorded before the switch have their coverage baseline restarted. `Program.cs`/`Main` of executable projects is excluded from the target, as allowed; the raw figure is still computed. Gaps are grouped by method (async state machines resolved to their source method). |
 | Test failures | `src/dotnet/trx.ts` | TRX parsed for failing test names, messages and stack traces. |
 | Mutation testing | `src/dotnet/stryker.ts` | `dotnet tool restore` + `dotnet stryker --config-file stryker-config.json --reporter json --output …`; score = (killed + timeout) / (killed + timeout + survived + no coverage). |
 | Rule enforcement | `src/guard.ts` | After every agent turn, any change outside test projects is **reverted** by the harness. Allowed exceptions: `public partial class Program { }`, `InternalsVisibleTo`, solution files, `Directory.Packages.props`, `.config/dotnet-tools.json`, root `stryker-config.*`. The agent is told what was reverted. |
@@ -116,7 +116,7 @@ coverage-harness status --manifest <file>
 | Option | Default | |
 |---|---|---|
 | `--src` | — | `/abs/dir/*` (every git repo in dir) or `/abs/repo` |
-| `--target` | — | statement coverage % |
+| `--target` | — | branch coverage % |
 | `--agent` | `claude` | `claude`, `opencode`, `copilot` |
 | `--model` | CLI default | passed through to the agent |
 | `--mutation-target` | 80 | mutation score % required to mark a repo done |
@@ -128,6 +128,7 @@ coverage-harness status --manifest <file>
 | `--fix-attempts` | 3 | fix prompts per red build before reverting |
 | `--agent-timeout` / `--agent-idle-timeout` | 90 / 20 min | |
 | `--test-timeout` / `--stryker-timeout` | 30 / 240 min | |
+| `--coverage-tool` | `microsoft` | how coverage is recorded: `microsoft` or `coverlet` |
 | `--stryker-concurrency` | half the cores | parallel test runners for Stryker (overrides `concurrency` in `stryker-config.json`) |
 | `--heartbeat` | 5 min | log a "still running" line during long agent/test/Stryker steps (0 = off) |
 | `--verbose` | off | also stream agent activity (tool calls, messages) to the console; it is always in the log files |

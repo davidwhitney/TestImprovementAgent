@@ -1,6 +1,6 @@
 # Task: scaffold outside-in component tests
 
-The repository at `{{repoPath}}` (solution `{{solution}}`) currently has **{{coverage}}%** statement coverage. An automated harness will spend many iterations raising that to **{{target}}%**. Before it can, the solution needs a component-test harness that boots the application in memory with its external dependencies stubbed out. Your job in this session is to build that foundation well; later sessions will add the bulk of the tests on top of it.
+The repository at `{{repoPath}}` (solution `{{solution}}`) currently has **{{coverage}}%** branch coverage. An automated harness will spend many iterations raising that to **{{target}}%**. Before it can, the solution needs a component-test harness that boots the application in memory with its external dependencies stubbed out. Your job in this session is to build that foundation well; later sessions will add the bulk of the tests on top of it.
 
 ## The application
 

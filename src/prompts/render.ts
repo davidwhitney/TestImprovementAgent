@@ -6,6 +6,7 @@ export const DEFAULT_PROMPTS_DIR = join(dirname(fileURLToPath(import.meta.url)),
 
 export type PromptName =
   | 'create-test-project'
+  | 'setup-coverlet'
   | 'scaffold-component-tests'
   | 'raise-coverage'
   | 'fix-build'

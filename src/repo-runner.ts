@@ -79,7 +79,7 @@ export class RepoRunner {
         e.phase = 'done';
         e.completedAt = new Date().toISOString();
       });
-      this.log.success(`Complete in ${formatDuration(Date.now() - started)}: statement coverage ${this.entry.coverage}%${this.entry.mutationScore !== undefined ? `, mutation score ${this.entry.mutationScore}%` : ''}`);
+      this.log.success(`Complete in ${formatDuration(Date.now() - started)}: branch coverage ${this.entry.coverage}%${this.entry.statementCoverage !== undefined ? ` (statement ${this.entry.statementCoverage}%)` : ''}${this.entry.mutationScore !== undefined ? `, mutation score ${this.entry.mutationScore}%` : ''}`);
       this.log.event('repo.end', { status: 'complete', coverage: this.entry.coverage, mutationScore: this.entry.mutationScore, durationMs: Date.now() - started });
       return 'complete';
     } catch (err) {
@@ -132,9 +132,42 @@ export class RepoRunner {
 
   /** Coverage needs no instrumentation package; the only prerequisite is a test project to run. */
   private async ensureTestProject(): Promise<void> {
-    let solution = await this.solution();
-    if (testProjects(solution).length > 0) return;
+    const solution = await this.solution();
+    if (testProjects(solution).length === 0) await this.createTestProject(solution);
+    if (this.cfg.coverageTool === 'coverlet') await this.ensureCoverlet();
+  }
 
+  private async ensureCoverlet(): Promise<void> {
+    const missing = (s: Solution) => testProjects(s).filter((p) => !p.hasCoverletCollector);
+    let solution = await this.solution();
+    if (missing(solution).length === 0) return;
+
+    await this.setPhase('test-project');
+    this.log.info('coverlet.collector missing from some test projects; dispatching agent to add it');
+    const checkpoint = await this.git.head();
+    let previousAttempt = '';
+    for (let attempt = 1; attempt <= this.cfg.fixAttempts; attempt++) {
+      await this.runTask('setup-coverlet', `coverlet-${attempt}`, { projectSummary: this.describeProjects(solution), previousAttempt });
+      await this.guard(checkpoint);
+      solution = await this.solution();
+      const stillMissing = missing(solution);
+      if (stillMissing.length > 0) {
+        previousAttempt = `## Previous attempt\n\nThe harness re-checked and these test projects still lack coverlet.collector: ${stillMissing.map((p) => p.name).join(', ')}.`;
+        continue;
+      }
+      if (await this.stabilise(checkpoint, 'adding coverlet', `coverlet-${attempt}`)) {
+        await this.commit('chore(test): add coverlet coverage instrumentation');
+        return;
+      }
+      previousAttempt = '## Previous attempt\n\nThe solution did not build/test cleanly after your changes, so they were discarded. Try again, more carefully.';
+      await this.reset(checkpoint);
+    }
+    await this.reset(checkpoint);
+    throw new HarnessStop('blocked', 'could not add coverlet instrumentation');
+  }
+
+  private async createTestProject(initial: Solution): Promise<void> {
+    let solution = initial;
     await this.setPhase('test-project');
     this.log.info('No test project found; dispatching agent to create one');
     const checkpoint = await this.git.head();
@@ -173,10 +206,13 @@ export class RepoRunner {
       throw new HarnessStop('blocked', 'the solution does not build or its existing tests fail, and the agent could not repair the tests');
     }
     if (await this.git.changedFiles(checkpoint).then((f) => f.length > 0)) await this.commit('test: repair failing tests before raising coverage');
-    await this.recordCoverage(green, 'baseline', 0, 'baseline measured');
     await this.update((e) => {
-      e.baselineCoverage ??= green.coverage.percent;
+      // Manifests from before the switch to branch coverage hold a statement-coverage baseline; restart it.
+      if (e.coverageMetric !== 'branch' || (e.coverageTool && e.coverageTool !== this.cfg.coverageTool)) e.baselineCoverage = undefined;
+      e.coverageTool = this.cfg.coverageTool;
+      e.baselineCoverage ??= green.coverage.branchPercent;
     });
+    await this.recordCoverage(green, 'baseline', 0, 'baseline measured');
     return green;
   }
 
@@ -189,7 +225,7 @@ export class RepoRunner {
     for (let attempt = 1; attempt <= 2; attempt++) {
       const checkpoint = await this.git.head();
       await this.runTask('scaffold-component-tests', `scaffold-${attempt}`, {
-        coverage: current.coverage.percent,
+        coverage: current.coverage.branchPercent,
         target: this.cfg.target,
         projectSummary: this.describeProjects(current.solution),
         componentProjectName: this.componentProjectName(current.solution),
@@ -199,7 +235,7 @@ export class RepoRunner {
       await this.guard(checkpoint);
       const green = await this.stabilise(checkpoint, 'scaffolding component tests', `scaffold-${attempt}`);
       if (green && testProjects(green.solution).some((p) => p.hasComponentTests)) {
-        await this.commit(`test: scaffold outside-in component tests (coverage ${current.coverage.percent}% → ${green.coverage.percent}%)`);
+        await this.commit(`test: scaffold outside-in component tests (coverage ${current.coverage.branchPercent}% → ${green.coverage.branchPercent}%)`);
         await this.recordCoverage(green, 'scaffold', attempt, 'component test harness scaffolded');
         return green;
       }
@@ -214,25 +250,25 @@ export class RepoRunner {
   private async coverageLoop(start: Green): Promise<Green> {
     let best = start;
     let stalls = 0;
-    if (best.coverage.percent >= this.cfg.target) return best;
+    if (best.coverage.branchPercent >= this.cfg.target) return best;
     await this.setPhase('coverage');
 
-    while (best.coverage.percent < this.cfg.target) {
+    while (best.coverage.branchPercent < this.cfg.target) {
       const iteration = this.entry.iterations.coverage + 1;
-      if (iteration > this.cfg.maxCoverageIterations) throw new HarnessStop('stalled', `reached ${this.cfg.maxCoverageIterations} coverage iterations at ${best.coverage.percent}%`);
+      if (iteration > this.cfg.maxCoverageIterations) throw new HarnessStop('stalled', `reached ${this.cfg.maxCoverageIterations} coverage iterations at ${best.coverage.branchPercent}%`);
       await this.update((e) => {
         e.iterations.coverage = iteration;
       });
       const label = `coverage-${iteration}`;
       const checkpoint = await this.git.head();
       const iterationStarted = Date.now();
-      this.log.info(`── Coverage iteration ${iteration}/${this.cfg.maxCoverageIterations}: ${best.coverage.percent}% → target ${this.cfg.target}% (${best.coverage.coverable - best.coverage.covered} statements uncovered)`);
-      this.log.event('iteration.start', { phase: 'coverage', iteration, coverage: best.coverage.percent, target: this.cfg.target, uncovered: best.coverage.coverable - best.coverage.covered, checkpoint });
+      this.log.info(`── Coverage iteration ${iteration}/${this.cfg.maxCoverageIterations}: ${best.coverage.branchPercent}% → target ${this.cfg.target}% (${best.coverage.branchCoverable - best.coverage.branchCovered} branches unexercised; statement coverage ${best.coverage.statementPercent}%)`);
+      this.log.event('iteration.start', { phase: 'coverage', iteration, coverage: best.coverage.branchPercent, statementCoverage: best.coverage.statementPercent, target: this.cfg.target, uncovered: best.coverage.branchCoverable - best.coverage.branchCovered, checkpoint });
 
       const report = await this.runTask('raise-coverage', label, {
         iteration,
-        coverage: best.coverage.percent,
-        branchCoverage: best.coverage.branchPercent,
+        coverage: best.coverage.branchPercent,
+        statementCoverage: best.coverage.statementPercent,
         target: this.cfg.target,
         componentProjects: testProjects(best.solution).filter((p) => p.hasComponentTests).map((p) => `\`${relative(this.repo, p.path)}\``).join(', ') || '(none detected)',
         gaps: renderGaps(best.coverage, 15),
@@ -246,28 +282,28 @@ export class RepoRunner {
         await this.reset(checkpoint);
         stalls++;
         outcome = 'reverted: tests could not be made green';
-      } else if (next.coverage.percent < best.coverage.percent) {
+      } else if (next.coverage.branchPercent < best.coverage.branchPercent) {
         await this.reset(checkpoint);
         stalls++;
-        outcome = `reverted: coverage fell from ${best.coverage.percent}% to ${next.coverage.percent}%`;
+        outcome = `reverted: coverage fell from ${best.coverage.branchPercent}% to ${next.coverage.branchPercent}%`;
       } else {
-        const improved = next.coverage.covered > best.coverage.covered || next.coverage.percent > best.coverage.percent;
+        const improved = next.coverage.branchCovered > best.coverage.branchCovered || next.coverage.branchPercent > best.coverage.branchPercent;
         const sha = await this.commit(
           improved
-            ? `test: raise statement coverage ${best.coverage.percent}% → ${next.coverage.percent}%`
-            : `test: add component tests (statement coverage unchanged at ${next.coverage.percent}%)`,
+            ? `test: raise branch coverage ${best.coverage.branchPercent}% → ${next.coverage.branchPercent}% (statements ${best.coverage.statementPercent}% → ${next.coverage.statementPercent}%)`
+            : `test: add component tests (branch coverage unchanged at ${next.coverage.branchPercent}%)`,
         );
-        outcome = improved ? `committed: ${best.coverage.percent}% → ${next.coverage.percent}%` : sha ? 'committed: no coverage gain' : 'no changes made';
+        outcome = improved ? `committed: branches ${best.coverage.branchPercent}% → ${next.coverage.branchPercent}%, statements ${best.coverage.statementPercent}% → ${next.coverage.statementPercent}%` : sha ? 'committed: no coverage gain' : 'no changes made';
         stalls = improved ? 0 : stalls + 1;
         best = next;
       }
       this.noteReport(report);
       await this.recordCoverage(best, 'coverage', iteration, outcome);
       this.log.info(`── Coverage iteration ${iteration} finished in ${formatDuration(Date.now() - iterationStarted)}: ${outcome} (target ${this.cfg.target}%, stalls ${stalls}/${this.cfg.stallLimit})`);
-      this.log.event('iteration.end', { phase: 'coverage', iteration, outcome, coverage: best.coverage.percent, stalls, durationMs: Date.now() - iterationStarted });
-      if (stalls >= this.cfg.stallLimit) throw new HarnessStop('stalled', `no coverage progress in ${stalls} consecutive iterations at ${best.coverage.percent}%`);
+      this.log.event('iteration.end', { phase: 'coverage', iteration, outcome, coverage: best.coverage.branchPercent, statementCoverage: best.coverage.statementPercent, stalls, durationMs: Date.now() - iterationStarted });
+      if (stalls >= this.cfg.stallLimit) throw new HarnessStop('stalled', `no coverage progress in ${stalls} consecutive iterations at ${best.coverage.branchPercent}%`);
     }
-    this.log.success(`Statement coverage target met: ${best.coverage.percent}% ≥ ${this.cfg.target}%`);
+    this.log.success(`Branch coverage target met: ${best.coverage.branchPercent}% ≥ ${this.cfg.target}% (statement coverage ${best.coverage.statementPercent}%)`);
     return best;
   }
 
@@ -331,7 +367,7 @@ export class RepoRunner {
         iteration,
         mutationScore: best.score,
         mutationTarget: this.cfg.mutationTarget,
-        coverage: coverage.coverage.percent,
+        coverage: coverage.coverage.branchPercent,
         target: this.cfg.target,
         survivors: renderSurvivors(best, 40),
         history: this.renderHistory('mutation'),
@@ -344,10 +380,10 @@ export class RepoRunner {
         await this.reset(checkpoint);
         stalls++;
         outcome = 'reverted: tests could not be made green';
-      } else if (next.coverage.percent < Math.min(this.cfg.target, coverage.coverage.percent)) {
+      } else if (next.coverage.branchPercent < Math.min(this.cfg.target, coverage.coverage.branchPercent)) {
         await this.reset(checkpoint);
         stalls++;
-        outcome = `reverted: statement coverage fell to ${next.coverage.percent}%`;
+        outcome = `reverted: branch coverage fell to ${next.coverage.branchPercent}%`;
       } else {
         const run = await this.mutationRun(label);
         if (!run.report) {
@@ -371,7 +407,7 @@ export class RepoRunner {
       this.noteReport(report);
       await this.recordMutation(best, iteration, outcome);
       this.log.info(`── Mutation iteration ${iteration} finished in ${formatDuration(Date.now() - iterationStarted)}: ${outcome} (target ${this.cfg.mutationTarget}%, stalls ${stalls}/${this.cfg.stallLimit})`);
-      this.log.event('iteration.end', { phase: 'mutation', iteration, outcome, mutationScore: best.score, coverage: coverage.coverage.percent, stalls, durationMs: Date.now() - iterationStarted });
+      this.log.event('iteration.end', { phase: 'mutation', iteration, outcome, mutationScore: best.score, coverage: coverage.coverage.branchPercent, stalls, durationMs: Date.now() - iterationStarted });
       if (stalls >= this.cfg.stallLimit) throw new HarnessStop('stalled', `no mutation score progress in ${stalls} consecutive iterations at ${best.score}%`);
     }
     this.log.success(`Mutation score target met: ${best.score}% ≥ ${this.cfg.mutationTarget}%`);
@@ -417,7 +453,7 @@ export class RepoRunner {
   }
 
   private measure(label: string): Promise<Measurement> {
-    return measure({ repo: this.repo, solutionPath: this.solutionPath, workDir: this.workDir, buildTimeoutMs: this.cfg.buildTimeoutMs, testTimeoutMs: this.cfg.testTimeoutMs, log: this.log, heartbeatMs: this.cfg.heartbeatMs }, label);
+    return measure({ repo: this.repo, solutionPath: this.solutionPath, workDir: this.workDir, buildTimeoutMs: this.cfg.buildTimeoutMs, testTimeoutMs: this.cfg.testTimeoutMs, coverageTool: this.cfg.coverageTool, log: this.log, heartbeatMs: this.cfg.heartbeatMs }, label);
   }
 
   private async mutationRun(label: string) {
@@ -571,7 +607,7 @@ export class RepoRunner {
   private describeProjects(s: Solution): string {
     const line = (p: Solution['projects'][number]) => {
       const tags = [p.isWeb ? 'ASP.NET Core' : p.isExecutable ? 'executable' : 'library'];
-      if (p.isTest) tags.splice(0, 1, 'test');
+      if (p.isTest) tags.splice(0, 1, 'test', p.hasCoverletCollector ? 'coverlet.collector ✓' : 'coverlet.collector ✗');
       if (p.hasComponentTests) tags.push('component tests');
       return `- \`${relative(this.repo, p.path)}\` (${tags.join(', ')})`;
     };
@@ -594,7 +630,7 @@ export class RepoRunner {
   }
 
   private renderHistory(phase: Phase): string {
-    const recent = this.entry.history.filter((h) => h.phase === phase && h.iteration > 0).slice(-6);
+    const recent = this.entry.history.filter((h) => h.phase === phase && h.iteration > 0 && (phase !== 'coverage' || h.metric === 'branch')).slice(-6);
     if (recent.length === 0) return '';
     return ['## Previous iterations', '', ...recent.map((h) => `- Iteration ${h.iteration}: ${h.outcome}`), '', 'Learn from reverted iterations: they were discarded because the suite was red or a number went down.'].join('\n');
   }
@@ -609,9 +645,10 @@ export class RepoRunner {
 
   private async recordCoverage(m: Green, phase: Phase, iteration: number, outcome: string): Promise<void> {
     await this.update((e) => {
-      e.coverage = m.coverage.percent;
-      e.branchCoverage = m.coverage.branchPercent;
-      e.history.push({ at: new Date().toISOString(), phase, iteration, outcome, coverage: m.coverage.percent });
+      e.coverage = m.coverage.branchPercent;
+      e.statementCoverage = m.coverage.statementPercent;
+      e.coverageMetric = 'branch';
+      e.history.push({ at: new Date().toISOString(), phase, iteration, outcome, coverage: m.coverage.branchPercent, statementCoverage: m.coverage.statementPercent, metric: 'branch' });
     });
   }
 

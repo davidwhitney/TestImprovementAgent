@@ -5,6 +5,7 @@ import { AGENT_NAMES, createAgent } from './agents/index.ts';
 import type { AgentName } from './agents/types.ts';
 import { DEFAULTS, type HarnessConfig } from './config.ts';
 import { applyEnvDefaults, envNameFor, loadDotEnv } from './env.ts';
+import { COVERAGE_TOOLS, type CoverageTool } from './dotnet/dotnet.ts';
 import { findSolution } from './dotnet/projects.ts';
 import { defaultManifestPath, discoverRepos, ManifestStore, type RepoEntry } from './manifest.ts';
 import { measure } from './measure.ts';
@@ -23,7 +24,7 @@ Usage:
 
 Required:
   --src <path>                 /abs/dir/* for every git repo in dir, or /abs/repo for one repo
-  --target <percent>           statement coverage to reach (e.g. 100)
+  --target <percent>           branch coverage to reach (e.g. 90)
 
 Options:
   --agent <claude|opencode|copilot>   agent CLI to drive (default ${DEFAULTS.agent})
@@ -44,6 +45,7 @@ Options:
   --agent-idle-timeout <minutes> kill an agent that prints nothing for this long (default ${DEFAULTS.agentIdleTimeoutMinutes})
   --test-timeout <minutes>     (default ${DEFAULTS.testTimeoutMinutes})
   --stryker-timeout <minutes>  (default ${DEFAULTS.strykerTimeoutMinutes})
+  --coverage-tool <tool>       how coverage is recorded: microsoft (built-in collector, default) or coverlet
   --stryker-concurrency <n>    parallel test runners for Stryker (default ${DEFAULTS.strykerConcurrency} = half the cores)
   --heartbeat <minutes>        log a "still running" line during long steps (default ${DEFAULTS.heartbeatMinutes}, 0 = off)
   --verbose                    also stream agent activity (tool calls, messages) to the console
@@ -96,6 +98,7 @@ const OPTIONS = {
   'agent-idle-timeout': { type: 'string' },
   'test-timeout': { type: 'string' },
   'stryker-timeout': { type: 'string' },
+  'coverage-tool': { type: 'string' },
   'stryker-concurrency': { type: 'string' },
   heartbeat: { type: 'string' },
   verbose: { type: 'boolean' },
@@ -137,6 +140,9 @@ async function main(): Promise<number> {
   const { repos, root } = discoverRepos(values.src);
   if (repos.length === 0) fail(`no git repositories found under ${values.src}`);
 
+  const coverageTool = (values['coverage-tool'] ?? DEFAULTS.coverageTool) as CoverageTool;
+  if (!COVERAGE_TOOLS.includes(coverageTool)) fail(`--coverage-tool must be one of ${COVERAGE_TOOLS.join(', ')}`);
+
   if (command === 'measure') {
     for (const repo of repos) {
       const sln = findSolution(repo);
@@ -145,7 +151,7 @@ async function main(): Promise<number> {
         continue;
       }
       const m = await measure(
-        { repo, solutionPath: sln, workDir: join(repo, '.coverage-harness'), buildTimeoutMs: DEFAULTS.buildTimeoutMinutes * 60_000, testTimeoutMs: minutes(values['test-timeout'], DEFAULTS.testTimeoutMinutes, 'test-timeout'), log: log.child(repo.split('/').pop()!) },
+        { repo, solutionPath: sln, workDir: join(repo, '.coverage-harness'), buildTimeoutMs: DEFAULTS.buildTimeoutMinutes * 60_000, testTimeoutMs: minutes(values['test-timeout'], DEFAULTS.testTimeoutMinutes, 'test-timeout'), coverageTool, log: log.child(repo.split('/').pop()!) },
         'measure',
       );
       if (m.kind !== 'green') log.warn(`${repo}: ${m.kind}`);
@@ -180,6 +186,7 @@ async function main(): Promise<number> {
     buildTimeoutMs: DEFAULTS.buildTimeoutMinutes * 60_000,
     testTimeoutMs: minutes(values['test-timeout'], DEFAULTS.testTimeoutMinutes, 'test-timeout'),
     strykerTimeoutMs: minutes(values['stryker-timeout'], DEFAULTS.strykerTimeoutMinutes, 'stryker-timeout'),
+    coverageTool,
     strykerConcurrency: num(values['stryker-concurrency'], DEFAULTS.strykerConcurrency, 'stryker-concurrency', 1, 256),
     heartbeatMs: num(values.heartbeat, DEFAULTS.heartbeatMinutes, 'heartbeat', 0) * 60_000,
     skipMutation: values['skip-mutation'] ?? false,
@@ -205,7 +212,7 @@ async function main(): Promise<number> {
   const prompts = new PromptLibrary(cfg.promptsDir);
   const runnable = new Set(['pending', 'in-progress', ...(values.retry ? ['blocked', 'stalled', 'error'] : [])]);
   const queue = manifest.data.repos.filter((r) => repos.includes(r.path) && runnable.has(r.status));
-  log.info(`${queue.length} repo(s) to process with ${cfg.agent}; target ${cfg.target}% statements${cfg.skipMutation ? '' : `, ${cfg.mutationTarget}% mutation score`}`);
+  log.info(`${queue.length} repo(s) to process with ${cfg.agent}; target ${cfg.target}% branch coverage${cfg.skipMutation ? '' : `, ${cfg.mutationTarget}% mutation score`}`);
 
   const runStarted = Date.now();
   log.event('run.start', {
@@ -259,8 +266,9 @@ function printStatus(repos: RepoEntry[]): void {
     repo: r.name,
     status: r.status,
     phase: r.phase ?? '',
-    baseline: r.baselineCoverage === undefined ? '' : `${r.baselineCoverage}%`,
-    coverage: r.coverage === undefined ? '' : `${r.coverage}%`,
+    'baseline (branch)': r.baselineCoverage === undefined ? '' : `${r.baselineCoverage}%`,
+    branch: r.coverage === undefined ? '' : `${r.coverage}%`,
+    statements: r.statementCoverage === undefined ? '' : `${r.statementCoverage}%`,
     mutation: r.mutationScore === undefined ? '' : `${r.mutationScore}%`,
     iterations: `${r.iterations.coverage}/${r.iterations.mutation}`,
   }));

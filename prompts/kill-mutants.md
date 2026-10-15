@@ -3,7 +3,7 @@
 Repository `{{repoPath}}`, solution `{{solution}}`. This is mutation iteration {{iteration}}.
 
 - Mutation score: **{{mutationScore}}%**, target **{{mutationTarget}}%**
-- Statement coverage: {{coverage}}% (must stay at or above {{target}}%)
+- Branch coverage: {{coverage}}% (must stay at or above {{target}}%)
 
 Each surviving mutant below is a small change to production code that **no test noticed**: either no test executes that line ("NoCoverage"), or tests execute it without asserting on its effect ("Survived"). The full list is in `.coverage-harness/surviving-mutants.md` (machine-readable: `.coverage-harness/surviving-mutants.json`).
 
@@ -23,7 +23,7 @@ For each mutant, work out what observable behaviour would change if the mutation
 
 Prefer strengthening existing tests' assertions where they already exercise the line; add new tests where they don't. If you are confident a mutant is behaviourally equivalent (no possible test can distinguish it), do not add Stryker disable comments; list it under `equivalentMutants` in your report.
 
-Keep the whole suite green and do not reduce statement coverage.
+Keep the whole suite green and do not reduce branch coverage.
 
 {{> testing-standards}}
 

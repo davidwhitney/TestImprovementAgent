@@ -17,16 +17,30 @@ export interface FileCoverage {
   uncoveredLines: number[];
   /** Uncovered lines grouped by the method that owns them, e.g. "OrderService.PlaceOrder" -> [40, 41, 52]. */
   uncoveredByMethod: Record<string, number[]>;
+  branchCovered: number;
+  branchCoverable: number;
+  /** Lines with unexercised branches, grouped by owning method. */
+  missingBranchesByMethod: Record<string, BranchGap[]>;
+  missingBranches: number;
+}
+
+export interface BranchGap {
+  line: number;
+  covered: number;
+  total: number;
 }
 
 export interface CoverageReport {
-  /** Statement (line/sequence-point) coverage %, entry points excluded. This is the number the harness targets. */
-  percent: number;
-  coverable: number;
-  covered: number;
+  /** Branch coverage %, entry points excluded. This is the number the harness targets (a file with no branches counts as fully covered). */
   branchPercent: number;
-  /** Same as percent but including entry-point files, for information. */
-  rawPercent: number;
+  branchCoverable: number;
+  branchCovered: number;
+  /** Statement (line/sequence-point) coverage %, entry points excluded. Informational. */
+  statementPercent: number;
+  statementCoverable: number;
+  statementCovered: number;
+  /** Same as statementPercent but including entry-point files, for information. */
+  rawStatementPercent: number;
   excludedFiles: string[];
   files: FileCoverage[];
   reportFiles: string[];
@@ -123,9 +137,11 @@ export function summarise(merged: Merged, repo: string, excluded: string[], repo
     let fileCovered = 0;
     let fileBranchCovered = 0;
     let fileBranchTotal = 0;
+    const missingBranchesByMethod: Record<string, BranchGap[]> = {};
     for (const [n, hit] of [...lines].sort((a, b) => a[0] - b[0])) {
       fileBranchTotal += hit.branchTotal;
       fileBranchCovered += hit.branchCovered;
+      if (hit.branchCovered < hit.branchTotal) (missingBranchesByMethod[hit.method ?? '(type-level)'] ??= []).push({ line: n, covered: hit.branchCovered, total: hit.branchTotal });
       if (hit.hits > 0) fileCovered++;
       else {
         uncoveredLines.push(n);
@@ -139,18 +155,31 @@ export function summarise(merged: Merged, repo: string, excluded: string[], repo
     covered += fileCovered;
     branchTotal += fileBranchTotal;
     branchCovered += fileBranchCovered;
-    files.push({ path, relPath: relative(repo, path), coverable: lines.size, covered: fileCovered, uncoveredLines, uncoveredByMethod });
+    files.push({
+      path,
+      relPath: relative(repo, path),
+      coverable: lines.size,
+      covered: fileCovered,
+      uncoveredLines,
+      uncoveredByMethod,
+      branchCovered: fileBranchCovered,
+      branchCoverable: fileBranchTotal,
+      missingBranchesByMethod,
+      missingBranches: fileBranchTotal - fileBranchCovered,
+    });
   }
 
-  const pct = (a: number, b: number) => (b === 0 ? 0 : Math.floor((a / b) * 10000) / 100);
+  const pct = (a: number, b: number, whenEmpty = 0) => (b === 0 ? whenEmpty : Math.floor((a / b) * 10000) / 100);
   return {
-    percent: pct(covered, coverable),
-    coverable,
-    covered,
-    branchPercent: pct(branchCovered, branchTotal),
-    rawPercent: pct(rawCovered, rawCoverable),
+    branchPercent: pct(branchCovered, branchTotal, 100),
+    branchCoverable: branchTotal,
+    branchCovered,
+    statementPercent: pct(covered, coverable),
+    statementCoverable: coverable,
+    statementCovered: covered,
+    rawStatementPercent: pct(rawCovered, rawCoverable),
     excludedFiles: excluded.filter((e) => merged.has(e)).map((e) => relative(repo, e)),
-    files: files.sort((a, b) => b.uncoveredLines.length - a.uncoveredLines.length),
+    files: files.sort((a, b) => b.missingBranches - a.missingBranches || b.uncoveredLines.length - a.uncoveredLines.length),
     reportFiles,
   };
 }
@@ -175,22 +204,24 @@ export function ranges(lines: number[]): string {
 
 /** Markdown gap report handed to the agent. `limit` caps how many files are listed. */
 export function renderGaps(report: CoverageReport, limit = 25): string {
-  const gaps = report.files.filter((f) => f.uncoveredLines.length > 0);
-  if (gaps.length === 0) return '_No uncovered statements._\n';
+  const gaps = report.files.filter((f) => f.missingBranches > 0);
+  if (gaps.length === 0) return '_No unexercised branches._\n';
   const lines = [
-    `Statement coverage: **${report.percent}%** (${report.covered}/${report.coverable} statements), branch coverage ${report.branchPercent}%.`,
+    `Branch coverage: **${report.branchPercent}%** (${report.branchCovered}/${report.branchCoverable} branches), statement coverage ${report.statementPercent}%.`,
     report.excludedFiles.length ? `Entry-point files excluded from the target: ${report.excludedFiles.join(', ')}` : '',
     '',
-    `| File | Covered | Uncovered statements |`,
+    `| File | Branches covered | Missing branches |`,
     `|---|---|---|`,
-    ...gaps.slice(0, limit).map((f) => `| ${f.relPath} | ${f.covered}/${f.coverable} | ${f.uncoveredLines.length} |`),
+    ...gaps.slice(0, limit).map((f) => `| ${f.relPath} | ${f.branchCovered}/${f.branchCoverable} | ${f.missingBranches} |`),
+    '',
+    'Each entry is `line (covered/total branches at that line)`. A line like `40 (0/2)` means neither outcome of a decision on line 40 has ever run (often the whole method is untested); `52 (1/2)` means only one outcome has, so you need an input that takes the other.',
     '',
   ];
   for (const f of gaps.slice(0, limit)) {
     lines.push(`### ${f.relPath}`);
-    for (const [method, ls] of Object.entries(f.uncoveredByMethod)) lines.push(`- \`${method}\` — lines ${ranges(ls)}`);
+    for (const [method, gs] of Object.entries(f.missingBranchesByMethod)) lines.push(`- \`${method}\` — ${gs.map((g) => `${g.line} (${g.covered}/${g.total})`).join(', ')}`);
     lines.push('');
   }
-  if (gaps.length > limit) lines.push(`…and ${gaps.length - limit} more files with gaps (see coverage-summary.json).`);
+  if (gaps.length > limit) lines.push(`…and ${gaps.length - limit} more files with unexercised branches (see coverage-summary.json).`);
   return lines.filter((l, i, a) => !(l === '' && a[i - 1] === '')).join('\n');
 }
