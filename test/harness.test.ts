@@ -134,7 +134,7 @@ describe('prompts', () => {
   const vars = {
     repoPath: '/r', solution: 'App.sln', projectSummary: 'x', noTestProjectInstruction: 'x', previousAttempt: '', coverage: 10, target: 100,
     componentProjectName: 'App.ComponentTests', componentProjectDir: 'tests/App.ComponentTests', iteration: 1, statementCoverage: 5,
-    componentProjects: 'x', gaps: 'GAPS', history: '', plan: 'PLAN', context: 'x', errors: 'E', notes: '', failures: 'F', testProjects: 'x',
+    componentProjects: 'x', gaps: 'GAPS', history: '', plan: 'PLAN', branchesNeeded: 100, sessionGoal: 30, context: 'x', errors: 'E', notes: '', failures: 'F', testProjects: 'x',
     mutationTarget: 80, mutationScore: 40, survivors: 'S', question: 'Q?',
   };
   const names: PromptName[] = ['create-test-project', 'setup-coverlet', 'scaffold-component-tests', 'raise-coverage', 'triage-coverage', 'fix-build', 'fix-tests', 'setup-stryker', 'kill-mutants', 'continue', 'answer'];

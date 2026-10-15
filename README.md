@@ -190,6 +190,10 @@ Runs are resumable: Ctrl-C kills the agent process tree and saves the manifest, 
 
 Statuses: `pending`, `in-progress`, `complete`, `stalled` (no progress, or out of iterations), `blocked` (a precondition the agent couldn't fix: dirty tree, broken production build, test-project/scaffold/Stryker setup failed), `skipped` (no .NET projects), `error`.
 
+### Exiting the long tail
+
+The coverage and mutation prompts let the agent end a session with `"status": "diminishing-returns"` and a `"reason"` once only expensive long-tail work is left. The signal is not taken on trust. The harness still measures and commits that session's work and records the reason, but ends the loop only if the agent signals on **two consecutive iterations** and **statement coverage has itself reached the target**. A first signal is logged and waits for confirmation (an iteration without it resets the count); a signal while statement coverage is below target is refused and the loop carries on. When accepted, the loop ends cleanly: the repo carries on to the next phase and finishes `complete` with coverage or mutation score below target, rather than grinding on until the stall limit marks it `stalled`.
+
 ### Agent usage / cost
 
 Where the agent CLI reports it, the harness logs usage after every agent turn and a repo total on completion, and keeps the running total in the manifest (`usage`), the `agent.end` / `repo.end` events and the `status` table. What's available depends on the CLI: Claude Code reports dollars and tokens, OpenCode dollars and tokens per step, GitHub Copilot only premium requests. Nothing is shown when a CLI reports nothing. Usage from interrupted or failed turns is included when the CLI got as far as reporting it.

@@ -3,8 +3,9 @@ import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
+import { parseHarnessReport } from '../src/agents/index.ts';
 import { ClaudeAdapter, claudeUsage } from '../src/agents/claude.ts';
-import { CopilotAdapter } from '../src/agents/copilot.ts';
+import { CopilotAdapter, withImplicitReport } from '../src/agents/copilot.ts';
 import { OpenCodeAdapter, opencodeStepUsage } from '../src/agents/opencode.ts';
 import { addUsage, formatUsage, type AgentRequest, type AgentUsage } from '../src/agents/types.ts';
 
@@ -115,5 +116,22 @@ describe('usage reporting', () => {
     assert.equal(formatUsage({ premiumRequests: 1 }), '1 premium request');
     assert.equal(formatUsage({ costUsd: 1.234, inputTokens: 45_200, outputTokens: 6100, cacheReadTokens: 2000 }), '$1.23, 45k in / 6.1k out tokens, 2.0k cached');
     assert.deepEqual(addUsage({ premiumRequests: 1 }, { premiumRequests: 2.5 }), { premiumRequests: 3.5 });
+  });
+});
+
+describe('diminishing-returns report', () => {
+  it('parses the status and reason', () => {
+    const r = parseHarnessReport('x <harness-report>{"status":"diminishing-returns","summary":"s","reason":"only race conditions left"}</harness-report>');
+    assert.equal(r?.status, 'diminishing-returns');
+    assert.equal(r?.reason, 'only race conditions left');
+  });
+});
+
+describe('copilot implicit report', () => {
+  it('turns a task_complete summary into a report block, unless a real one exists', () => {
+    const out = withImplicitReport('hello', 'Added 2 tests');
+    assert.match(out, /<harness-report>\s*\{"status":"done","summary":"Added 2 tests"\}\s*<\/harness-report>/);
+    assert.equal(withImplicitReport('x <harness-report>{}</harness-report>', 'Added'), 'x <harness-report>{}</harness-report>');
+    assert.equal(withImplicitReport('hello', undefined), 'hello');
   });
 });

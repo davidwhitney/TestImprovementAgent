@@ -25,6 +25,7 @@ export class CopilotAdapter implements AgentAdapter {
     let sessionId = req.sessionId ?? randomUUID();
     let error: string | undefined;
     let usage: AgentUsage | undefined;
+    let completion: string | undefined;
     const texts: string[] = [];
 
     const r = await run(this.binary, this.buildArgs(req, sessionId), {
@@ -42,7 +43,10 @@ export class CopilotAdapter implements AgentAdapter {
             texts.push(content);
             req.onEvent?.(oneLine(content));
           }
-          for (const tool of ev.data?.toolRequests ?? []) req.onEvent?.(`⚙ ${tool.name ?? 'tool'} ${describeToolInput(tool.arguments)}`);
+          for (const tool of ev.data?.toolRequests ?? []) {
+            req.onEvent?.(`⚙ ${tool.name ?? 'tool'} ${describeToolInput(tool.arguments)}`);
+            if (tool.name === 'task_complete' && typeof tool.arguments?.summary === 'string') completion = tool.arguments.summary;
+          }
         } else if (ev.type === 'result') {
           sessionId = ev.sessionId ?? sessionId;
           if (typeof ev.usage?.premiumRequests === 'number') usage = { premiumRequests: ev.usage.premiumRequests };
@@ -58,10 +62,20 @@ export class CopilotAdapter implements AgentAdapter {
       timedOut: r.timedOut,
       idledOut: r.idledOut,
       durationMs: r.durationMs,
-      finalText: texts.join('\n'),
+      finalText: withImplicitReport(texts.join('\n'), completion),
       sessionId,
       usage,
       error: error ?? (r.code !== 0 ? r.stderr.slice(-2000) || undefined : undefined),
     };
   }
+}
+
+/**
+ * In autopilot Copilot usually ends by calling `task_complete` with a summary instead of writing a final
+ * message, so no report block ever appears. Without this the harness would send pointless follow-up turns.
+ */
+export function withImplicitReport(text: string, completionSummary: string | undefined): string {
+  if (!completionSummary || text.includes('<harness-report>')) return text;
+  const report = JSON.stringify({ status: 'done', summary: completionSummary.slice(0, 500) });
+  return `${text}\n${completionSummary}\n<harness-report>\n${report}\n</harness-report>`;
 }

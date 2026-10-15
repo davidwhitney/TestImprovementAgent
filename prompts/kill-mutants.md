@@ -27,6 +27,10 @@ Keep the whole suite green and do not reduce branch coverage.
 
 {{> testing-standards}}
 
+## Knowing when to stop
+
+If the surviving mutants that remain are almost all equivalent mutants, or would need contortions out of proportion to their value, and further sessions would each kill very few, end with `"status": "diminishing-returns"` and a `"reason"` (list the equivalent ones under `equivalentMutants`). Do this only when it is true, and only after killing everything that is cheap to kill. The harness keeps your work and stops iterating.
+
 {{> rules}}
 
 {{> report}}

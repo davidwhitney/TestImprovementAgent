@@ -249,6 +249,12 @@ export class RepoRunner {
     throw new HarnessStop('blocked', 'could not scaffold component tests');
   }
 
+  /** How many branches this session should aim to close, so each iteration is worth its build/test/startup overhead. */
+  private sessionGoal(c: { branchCovered: number; branchCoverable: number }): { branchesNeeded: number; sessionGoal: number } {
+    const needed = Math.max(0, Math.ceil((this.cfg.target / 100) * c.branchCoverable) - c.branchCovered);
+    return { branchesNeeded: needed, sessionGoal: Math.min(needed, Math.max(30, Math.ceil(needed / 4))) };
+  }
+
   private get planPath(): string {
     return join(this.workDir, PLAN_FILE);
   }
@@ -292,6 +298,7 @@ export class RepoRunner {
   private async coverageLoop(start: Green): Promise<Green> {
     let best = start;
     let stalls = 0;
+    let exitSignals = 0;
     if (best.coverage.branchPercent >= this.cfg.target) return best;
     if (!this.cfg.skipTriage) await this.triage(best);
     await this.setPhase('coverage');
@@ -317,6 +324,7 @@ export class RepoRunner {
         gaps: renderGaps(best.coverage, 15),
         history: this.renderHistory('coverage'),
         plan: this.renderPlan(),
+        ...this.sessionGoal(best.coverage),
       });
       await this.guard(checkpoint);
       const next = await this.stabilise(checkpoint, `coverage iteration ${iteration}`, label);
@@ -342,9 +350,16 @@ export class RepoRunner {
         best = next;
       }
       this.noteReport(report);
+      const coverageExit = this.assessExitSignal(report, exitSignals, best.coverage.statementPercent, 'statement coverage');
+      exitSignals = coverageExit.signals;
+      if (coverageExit.note) outcome += ` (${coverageExit.note})`;
       await this.recordCoverage(best, 'coverage', iteration, outcome);
       this.log.info(`── Coverage iteration ${iteration} finished in ${formatDuration(Date.now() - iterationStarted)}: ${outcome} (target ${this.cfg.target}%, stalls ${stalls}/${this.cfg.stallLimit})`);
       this.log.event('iteration.end', { phase: 'coverage', iteration, outcome, coverage: best.coverage.branchPercent, statementCoverage: best.coverage.statementPercent, stalls, durationMs: Date.now() - iterationStarted });
+      if (coverageExit.accepted) {
+        this.log.warn(`Agent signalled diminishing returns twice in a row at ${best.coverage.branchPercent}% branch coverage (target ${this.cfg.target}%): ${report?.reason ?? report?.summary}. Ending the coverage loop here.`);
+        return best;
+      }
       if (stalls >= this.cfg.stallLimit) throw new HarnessStop('stalled', `no coverage progress in ${stalls} consecutive iterations at ${best.coverage.branchPercent}%`);
     }
     this.log.success(`Branch coverage target met: ${best.coverage.branchPercent}% ≥ ${this.cfg.target}% (statement coverage ${best.coverage.statementPercent}%)`);
@@ -391,6 +406,7 @@ export class RepoRunner {
     let best = initial;
     let coverage = green;
     let stalls = 0;
+    let exitSignals = 0;
     await this.recordMutation(best, 0, 'initial mutation run');
     await this.setPhase('mutation');
 
@@ -449,9 +465,16 @@ export class RepoRunner {
         }
       }
       this.noteReport(report);
+      const mutationExit = this.assessExitSignal(report, exitSignals, coverage.coverage.statementPercent, 'statement coverage');
+      exitSignals = mutationExit.signals;
+      if (mutationExit.note) outcome += ` (${mutationExit.note})`;
       await this.recordMutation(best, iteration, outcome);
       this.log.info(`── Mutation iteration ${iteration} finished in ${formatDuration(Date.now() - iterationStarted)}: ${outcome} (target ${this.cfg.mutationTarget}%, stalls ${stalls}/${this.cfg.stallLimit})`);
       this.log.event('iteration.end', { phase: 'mutation', iteration, outcome, mutationScore: best.score, coverage: coverage.coverage.branchPercent, stalls, durationMs: Date.now() - iterationStarted });
+      if (mutationExit.accepted) {
+        this.log.warn(`Agent signalled diminishing returns twice in a row at mutation score ${best.score}% (target ${this.cfg.mutationTarget}%): ${report?.reason ?? report?.summary}. Ending the mutation loop here.`);
+        return;
+      }
       if (stalls >= this.cfg.stallLimit) throw new HarnessStop('stalled', `no mutation score progress in ${stalls} consecutive iterations at ${best.score}%`);
     }
     this.log.success(`Mutation score target met: ${best.score}% ≥ ${this.cfg.mutationTarget}%`);
@@ -618,9 +641,28 @@ export class RepoRunner {
     return report;
   }
 
+  /**
+   * An agent's "diminishing returns" signal only ends a loop when it is repeated on two consecutive
+   * iterations and statement coverage has itself reached the target; otherwise the loop carries on.
+   */
+  private assessExitSignal(report: HarnessReport | undefined, signals: number, statementPercent: number, metricName: string): { signals: number; accepted: boolean; note?: string } {
+    if (report?.status !== 'diminishing-returns') return { signals: 0, accepted: false };
+    if (statementPercent < this.cfg.target) {
+      this.log.warn(`Agent signalled diminishing returns, but ${metricName} is ${statementPercent}%, below the ${this.cfg.target}% target: continuing`);
+      return { signals: 0, accepted: false, note: `agent signalled diminishing returns; refused, ${metricName} ${statementPercent}% < ${this.cfg.target}%` };
+    }
+    const count = signals + 1;
+    if (count < 2) {
+      this.log.info('Agent signalled diminishing returns; waiting for it to confirm on the next iteration');
+      return { signals: count, accepted: false, note: 'agent signalled diminishing returns (1 of 2)' };
+    }
+    return { signals: count, accepted: true, note: 'agent signalled diminishing returns (confirmed)' };
+  }
+
   private noteReport(report: HarnessReport | undefined): void {
     if (!report) return;
     const notes: string[] = [];
+    if (report.status === 'diminishing-returns') notes.push(`agent signalled diminishing returns: ${report.reason ?? report.summary}`);
     if (report.status === 'blocked') notes.push(`agent blocked: ${report.blockers ?? report.summary}`);
     for (const u of report.unreachable ?? []) notes.push(`unreachable (agent): ${u}`);
     for (const m of report.equivalentMutants ?? []) notes.push(`equivalent mutant (agent): ${m}`);

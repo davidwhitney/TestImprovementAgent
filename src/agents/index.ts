@@ -17,11 +17,12 @@ export function createAgent(name: AgentName, binary?: string): AgentAdapter {
 }
 
 export interface HarnessReport {
-  status: 'done' | 'partial' | 'blocked' | 'needs-input';
+  status: 'done' | 'partial' | 'blocked' | 'needs-input' | 'diminishing-returns';
   summary: string;
   testsAdded?: number;
   question?: string;
   blockers?: string;
+  reason?: string;
   unreachable?: string[];
   equivalentMutants?: string[];
 }

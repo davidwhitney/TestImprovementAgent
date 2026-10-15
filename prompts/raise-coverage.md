@@ -3,7 +3,8 @@
 Repository `{{repoPath}}`, solution `{{solution}}`. This is iteration {{iteration}} of an automated loop.
 
 - Current branch coverage: **{{coverage}}%** (statement coverage {{statementCoverage}}%)
-- Target: **{{target}}%**
+- Target: **{{target}}%**, which means roughly **{{branchesNeeded}} more branches** to exercise
+- **Session goal: close at least {{sessionGoal}} unexercised branches in this session.** Each session has a fixed overhead (build, full test run, restart), so do not stop after one or two tests: keep going through the gap list and the plan, one area after another, running `dotnet test` as you go, until you have reached the goal or run out of reachable gaps. Finishing early with "most gaps remain" wastes the session. Parametrised tests (`[Theory]`) are a cheap way to cover many branches of one method at once.
 - Component test project(s): {{componentProjects}} (see the README in that project for the map of stubbed dependencies)
 
 The entry point itself (`Program.cs` / `Main`) is excluded from the target, but everything it calls must be covered.
@@ -28,6 +29,10 @@ The target is **branch coverage**: every outcome of every decision (`if`/`else`,
 6. Work in small increments, running `dotnet test` frequently. Leave everything green.
 
 Aim to close as many of the listed gaps as you can in this session; the harness will measure the result and come back with the next batch.
+
+## Knowing when to stop
+
+Coverage gets steadily more expensive per branch. If, after finishing this session's work, what is left is **only the expensive long tail** (branches that need contortions, new infrastructure or timing tricks, compiler-generated branches, defensive code that is effectively unreachable) and further sessions would each buy very little, say so: end with `"status": "diminishing-returns"` and a `"reason"` listing what is left and why. Do this honestly and only when it is true: not because a session was hard, and not before you have worked through the plan's quick wins. The harness keeps everything you wrote, then moves on to the next phase instead of looping on the long tail.
 
 {{> testing-standards}}
 
