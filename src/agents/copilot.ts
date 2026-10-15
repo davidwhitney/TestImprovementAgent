@@ -4,9 +4,7 @@ import { describeToolInput, oneLine, parseJsonLine } from './jsonl.ts';
 import type { AgentAdapter, AgentRequest, AgentResult } from './types.ts';
 
 /**
- * GitHub Copilot CLI: `copilot -p <prompt> --yolo --no-ask-user --autopilot --output-format json --resume=<uuid>`
- * `--resume=<uuid>` with a fresh UUID starts a new session under an id we choose, so follow-ups
- * can resume exactly that session even when several repos run in parallel.
+ * GitHub Copilot CLI: start sessions with `--session-id`; use `--resume` only for existing sessions.
  */
 export class CopilotAdapter implements AgentAdapter {
   readonly name = 'copilot';
@@ -17,7 +15,8 @@ export class CopilotAdapter implements AgentAdapter {
   }
 
   buildArgs(req: AgentRequest, sessionId: string): string[] {
-    const args = ['-p', req.prompt, '--yolo', '--no-ask-user', '--autopilot', '--output-format', 'json', `--resume=${sessionId}`];
+    const sessionArg = req.sessionId ? `--resume=${req.sessionId}` : `--session-id=${sessionId}`;
+    const args = ['-p', req.prompt, '--yolo', '--no-ask-user', '--autopilot', '--output-format', 'json', sessionArg];
     if (req.model) args.push('--model', req.model);
     return args;
   }

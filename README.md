@@ -83,7 +83,7 @@ Agents are supervised with a wall-clock timeout and an **idle timeout** (no outp
 |---|---|---|---|
 | `claude` | `claude -p --dangerously-skip-permissions --output-format stream-json --verbose` (prompt on stdin) | `assistant` / `result` events | `--resume <session_id>` |
 | `opencode` | `opencode run --auto --format json [-m provider/model] <prompt>` | `text` / `tool_use` events | `-s <sessionID>` |
-| `copilot` | `copilot -p <prompt> --yolo --no-ask-user --autopilot --output-format json --resume=<uuid>` | `assistant.message` / `result` events | the same `--resume=<uuid>` (the harness picks the id up front) |
+| `copilot` | `copilot -p <prompt> --yolo --no-ask-user --autopilot --output-format json --session-id=<uuid>` | `assistant.message` / `result` events | `--resume=<uuid>` |
 
 Adding another CLI means implementing `AgentAdapter.invoke()` (one file) and registering it in `src/agents/index.ts`.
 

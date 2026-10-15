@@ -62,9 +62,14 @@ describe('opencode adapter', () => {
 });
 
 describe('copilot adapter', () => {
-  it('runs with --yolo under a session id we choose', () => {
+  it('starts a new --yolo session with the chosen session id', () => {
     const args = new CopilotAdapter().buildArgs(req(), 'uuid-1');
-    assert.deepEqual(args, ['-p', 'do the thing', '--yolo', '--no-ask-user', '--autopilot', '--output-format', 'json', '--resume=uuid-1']);
+    assert.deepEqual(args, ['-p', 'do the thing', '--yolo', '--no-ask-user', '--autopilot', '--output-format', 'json', '--session-id=uuid-1']);
+  });
+
+  it('resumes an existing session for follow-ups', () => {
+    const args = new CopilotAdapter().buildArgs(req({ sessionId: 'uuid-existing' }), 'uuid-unused');
+    assert.deepEqual(args, ['-p', 'do the thing', '--yolo', '--no-ask-user', '--autopilot', '--output-format', 'json', '--resume=uuid-existing']);
   });
 
   it('parses json events and keeps the session id for follow-ups', async () => {
