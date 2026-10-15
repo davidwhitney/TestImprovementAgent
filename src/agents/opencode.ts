@@ -1,6 +1,6 @@
 import { run } from '../util/exec.ts';
 import { describeToolInput, oneLine, parseJsonLine } from './jsonl.ts';
-import type { AgentAdapter, AgentRequest, AgentResult } from './types.ts';
+import { addUsage, type AgentAdapter, type AgentRequest, type AgentResult, type AgentUsage } from './types.ts';
 
 /**
  * OpenCode: `opencode run --auto --format json [-m provider/model] [-s session] <prompt>`
@@ -29,6 +29,7 @@ export class OpenCodeAdapter implements AgentAdapter {
   async invoke(req: AgentRequest): Promise<AgentResult> {
     let sessionId: string | undefined;
     let error: string | undefined;
+    let usage: AgentUsage | undefined;
     const texts: string[] = [];
 
     const r = await run(this.binary, this.buildArgs(req), {
@@ -47,6 +48,8 @@ export class OpenCodeAdapter implements AgentAdapter {
         } else if (ev.type === 'tool_use' || part.type === 'tool') {
           const status = part.state?.status;
           if (!status || status === 'completed' || status === 'running') req.onEvent?.(`⚙ ${part.tool ?? 'tool'} ${describeToolInput(part.state?.input)}`);
+        } else if (ev.type === 'step_finish') {
+          usage = addUsage(usage, opencodeStepUsage(part));
         } else if (ev.type === 'error') {
           error = oneLine(JSON.stringify(ev.error ?? ev), 500);
         }
@@ -60,7 +63,20 @@ export class OpenCodeAdapter implements AgentAdapter {
       durationMs: r.durationMs,
       finalText: texts.join('\n'),
       sessionId,
+      usage,
       error: error ?? (r.code !== 0 ? r.stderr.slice(-2000) || undefined : undefined),
     };
   }
+}
+
+/** Each `step_finish` part reports that step's cost and tokens; the invocation total is their sum. */
+export function opencodeStepUsage(part: any): AgentUsage | undefined {
+  const t = part?.tokens ?? {};
+  const usage: AgentUsage = {};
+  if (typeof part?.cost === 'number') usage.costUsd = part.cost;
+  if (typeof t.input === 'number') usage.inputTokens = t.input;
+  if (typeof t.output === 'number') usage.outputTokens = (t.output as number) + (typeof t.reasoning === 'number' ? t.reasoning : 0);
+  if (typeof t.cache?.read === 'number') usage.cacheReadTokens = t.cache.read;
+  if (typeof t.cache?.write === 'number') usage.cacheWriteTokens = t.cache.write;
+  return Object.keys(usage).length ? usage : undefined;
 }

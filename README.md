@@ -184,6 +184,10 @@ Runs are resumable: Ctrl-C kills the agent process tree and saves the manifest, 
 
 Statuses: `pending`, `in-progress`, `complete`, `stalled` (no progress, or out of iterations), `blocked` (a precondition the agent couldn't fix: dirty tree, broken production build, test-project/scaffold/Stryker setup failed), `skipped` (no .NET projects), `error`.
 
+### Agent usage / cost
+
+Where the agent CLI reports it, the harness logs usage after every agent turn and a repo total on completion, and keeps the running total in the manifest (`usage`), the `agent.end` / `repo.end` events and the `status` table. What's available depends on the CLI: Claude Code reports dollars and tokens, OpenCode dollars and tokens per step, GitHub Copilot only premium requests. Nothing is shown when a CLI reports nothing. Usage from interrupted or failed turns is included when the CLI got as far as reporting it.
+
 ## Limitations and known trade-offs
 
 - Equivalent mutants make 100% mutation score unrealistic. Set `--mutation-target` accordingly. Mutants the agent reports as equivalent are recorded in the manifest notes but don't count towards the score; the harness doesn't trust the agent to grade itself.

@@ -3,10 +3,10 @@ import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
-import { ClaudeAdapter } from '../src/agents/claude.ts';
+import { ClaudeAdapter, claudeUsage } from '../src/agents/claude.ts';
 import { CopilotAdapter } from '../src/agents/copilot.ts';
-import { OpenCodeAdapter } from '../src/agents/opencode.ts';
-import type { AgentRequest } from '../src/agents/types.ts';
+import { OpenCodeAdapter, opencodeStepUsage } from '../src/agents/opencode.ts';
+import { addUsage, formatUsage, type AgentRequest, type AgentUsage } from '../src/agents/types.ts';
 
 const dir = mkdtempSync(join(tmpdir(), 'harness-agents-'));
 const req = (extra: Partial<AgentRequest> = {}): AgentRequest => ({ cwd: dir, prompt: 'do the thing', logFile: join(dir, 'agent.log'), timeoutMs: 30_000, idleTimeoutMs: 30_000, ...extra });
@@ -92,5 +92,28 @@ describe('process supervision', () => {
     const r = await new ClaudeAdapter(path).invoke(req({ idleTimeoutMs: 300 }));
     assert.equal(r.idledOut, true);
     assert.ok(r.durationMs < 5000);
+  });
+});
+
+describe('usage reporting', () => {
+  it('reads cost and tokens from Claude, premium requests from Copilot, and sums OpenCode steps', () => {
+    assert.deepEqual(claudeUsage({ total_cost_usd: 0.5, usage: { input_tokens: 10, output_tokens: 4, cache_read_input_tokens: 100, cache_creation_input_tokens: 7 } }), {
+      costUsd: 0.5, inputTokens: 10, outputTokens: 4, cacheReadTokens: 100, cacheWriteTokens: 7,
+    });
+    assert.equal(claudeUsage({}), undefined);
+    const steps = [{ cost: 0.1, tokens: { input: 5, output: 2, reasoning: 1, cache: { read: 3, write: 0 } } }, { cost: 0.2, tokens: { input: 6, output: 1 } }];
+    const total = steps.reduce<AgentUsage | undefined>((acc, s) => addUsage(acc, opencodeStepUsage(s)), undefined);
+    assert.equal(total?.inputTokens, 11);
+    assert.equal(total?.outputTokens, 4);
+    assert.equal(total?.cacheReadTokens, 3);
+    assert.ok(Math.abs((total?.costUsd ?? 0) - 0.3) < 1e-9);
+  });
+
+  it('formats only what was reported', () => {
+    assert.equal(formatUsage(undefined), undefined);
+    assert.equal(formatUsage({}), undefined);
+    assert.equal(formatUsage({ premiumRequests: 1 }), '1 premium request');
+    assert.equal(formatUsage({ costUsd: 1.234, inputTokens: 45_200, outputTokens: 6100, cacheReadTokens: 2000 }), '$1.23, 45k in / 6.1k out tokens, 2.0k cached');
+    assert.deepEqual(addUsage({ premiumRequests: 1 }, { premiumRequests: 2.5 }), { premiumRequests: 3.5 });
   });
 });

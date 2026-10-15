@@ -5,6 +5,7 @@ import { AGENT_NAMES, createAgent } from './agents/index.ts';
 import type { AgentName } from './agents/types.ts';
 import { DEFAULTS, type HarnessConfig } from './config.ts';
 import { applyEnvDefaults, envNameFor, loadDotEnv } from './env.ts';
+import { formatUsage } from './agents/types.ts';
 import { COVERAGE_TOOLS, type CoverageTool } from './dotnet/dotnet.ts';
 import { findSolution } from './dotnet/projects.ts';
 import { defaultManifestPath, discoverRepos, ManifestStore, type RepoEntry } from './manifest.ts';
@@ -271,6 +272,7 @@ function printStatus(repos: RepoEntry[]): void {
     statements: r.statementCoverage === undefined ? '' : `${r.statementCoverage}%`,
     mutation: r.mutationScore === undefined ? '' : `${r.mutationScore}%`,
     iterations: `${r.iterations.coverage}/${r.iterations.mutation}`,
+    usage: formatUsage(r.usage) ?? '',
   }));
   console.table(rows);
 }

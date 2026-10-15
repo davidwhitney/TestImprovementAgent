@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { basename, join, relative } from 'node:path';
 import { parseHarnessReport, type HarnessReport } from './agents/index.ts';
-import type { AgentAdapter } from './agents/types.ts';
+import { addUsage, formatUsage, type AgentAdapter } from './agents/types.ts';
 import type { HarnessConfig } from './config.ts';
 import { renderGaps } from './coverage/cobertura.ts';
 import { renderFailures } from './dotnet/dotnet.ts';
@@ -79,14 +79,14 @@ export class RepoRunner {
         e.phase = 'done';
         e.completedAt = new Date().toISOString();
       });
-      this.log.success(`Complete in ${formatDuration(Date.now() - started)}: branch coverage ${this.entry.coverage}%${this.entry.statementCoverage !== undefined ? ` (statement ${this.entry.statementCoverage}%)` : ''}${this.entry.mutationScore !== undefined ? `, mutation score ${this.entry.mutationScore}%` : ''}`);
-      this.log.event('repo.end', { status: 'complete', coverage: this.entry.coverage, mutationScore: this.entry.mutationScore, durationMs: Date.now() - started });
+      this.log.success(`Complete in ${formatDuration(Date.now() - started)}: branch coverage ${this.entry.coverage}%${this.entry.statementCoverage !== undefined ? ` (statement ${this.entry.statementCoverage}%)` : ''}${this.entry.mutationScore !== undefined ? `, mutation score ${this.entry.mutationScore}%` : ''}${formatUsage(this.entry.usage) ? `; agent usage: ${formatUsage(this.entry.usage)}` : ''}`);
+      this.log.event('repo.end', { status: 'complete', coverage: this.entry.coverage, mutationScore: this.entry.mutationScore, usage: this.entry.usage, durationMs: Date.now() - started });
       return 'complete';
     } catch (err) {
       const status: RepoStatus = err instanceof HarnessStop ? err.status : 'error';
       const message = err instanceof Error ? err.message : String(err);
       (status === 'error' ? this.log.error : this.log.warn).call(this.log, `${status} after ${formatDuration(Date.now() - started)}: ${message}`);
-      this.log.event('repo.end', { status, reason: message, phase: this.entry.phase, coverage: this.entry.coverage, mutationScore: this.entry.mutationScore, durationMs: Date.now() - started });
+      this.log.event('repo.end', { status, reason: message, phase: this.entry.phase, coverage: this.entry.coverage, mutationScore: this.entry.mutationScore, usage: this.entry.usage, durationMs: Date.now() - started });
       await this.update((e) => {
         e.status = status;
         e.notes.push(`${new Date().toISOString()} ${status}: ${message}`);
@@ -540,12 +540,16 @@ export class RepoRunner {
         report: parseHarnessReport(result.finalText),
         error: result.error?.slice(0, 500),
         durationMs: result.durationMs,
+        usage: result.usage,
       });
       await this.update((e) => {
         e.agentInvocations++;
+        e.usage = addUsage(e.usage, result.usage);
       });
       sessionId = result.sessionId ?? sessionId;
       const took = formatDuration(result.durationMs);
+      const turnUsage = formatUsage(result.usage);
+      if (turnUsage) this.log.info(`  ${this.agent.name} usage (${turnLabel}): ${turnUsage}; repo total ${formatUsage(this.entry.usage)}`);
 
       if (result.timedOut || result.idledOut) {
         this.log.warn(`← ${this.agent.name} ${result.timedOut ? 'timed out' : 'went idle'} after ${took}; measuring whatever it left`);

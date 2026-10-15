@@ -4,6 +4,8 @@ import { basename, dirname, join, resolve } from 'node:path';
 export type RepoStatus = 'pending' | 'in-progress' | 'complete' | 'blocked' | 'stalled' | 'skipped' | 'error';
 export type Phase = 'prepare' | 'test-project' | 'baseline' | 'scaffold' | 'coverage' | 'stryker-setup' | 'mutation' | 'done';
 
+import type { AgentUsage } from './agents/types.ts';
+
 export interface HistoryEntry {
   at: string;
   phase: Phase;
@@ -33,6 +35,8 @@ export interface RepoEntry {
   mutationScore?: number;
   iterations: { coverage: number; mutation: number };
   agentInvocations: number;
+  /** Cost reported by the agent CLI, summed over every invocation (absent if the CLI reports none). */
+  usage?: AgentUsage;
   startedAt?: string;
   updatedAt?: string;
   completedAt?: string;
