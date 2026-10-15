@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { isAbsolute, join, relative } from 'node:path';
 import { run } from '../util/exec.ts';
+import { formatDuration } from '../util/log.ts';
 import { findFiles } from './projects.ts';
 
 export const STRYKER_CONFIG_NAMES = ['stryker-config.json', 'stryker-config.yaml', 'stryker-config.yml'];
@@ -78,12 +79,99 @@ export function parseMutationReport(json: string, repo: string, reportFile = '')
   };
 }
 
+export interface StrykerProgress {
+  total: number;
+  tested: number;
+  killed: number;
+  survived: number;
+  timeout: number;
+}
+
+/**
+ * Follows Stryker's `dots` reporter, which writes one character per tested mutant ('.' killed,
+ * 'S' survived, 'T' timeout) without newlines, interleaved with `[hh:mm:ss INF]` log lines.
+ * Counting starts once Stryker announces how many mutants will be tested.
+ */
+export class StrykerProgressTracker {
+  readonly progress: StrykerProgress = { total: 0, tested: 0, killed: 0, survived: 0, timeout: 0 };
+  private startedAt = 0;
+  private logText = ''; // the log message being assembled on the current line, if any
+  private lineIsDots = true; // nothing but dot characters seen so far on the current line
+  private inLog = false;
+
+  push(chunk: string): void {
+    const lines = chunk.split('\n');
+    lines.forEach((text, i) => {
+      if (i > 0) this.endLine();
+      this.consume(text);
+    });
+  }
+
+  private endLine(): void {
+    const total = /(\d+)\s+total mutants will be tested/.exec(this.logText);
+    if (total) {
+      this.progress.total = Number(total[1]);
+      this.startedAt = Date.now();
+    }
+    this.logText = '';
+    this.inLog = false;
+    this.lineIsDots = true;
+  }
+
+  private consume(text: string): void {
+    let dots = text;
+    if (!this.inLog) {
+      const marker = /\[\d{2}:\d{2}:\d{2} \w{3}\]/.exec(text);
+      if (marker) {
+        dots = text.slice(0, marker.index);
+        this.inLog = true;
+        this.logText += text.slice(marker.index);
+      }
+    } else {
+      this.logText += text;
+      return;
+    }
+    if (!this.lineIsDots) return;
+    if (!/^[.ST]*$/.test(dots)) {
+      this.lineIsDots = false;
+      return;
+    }
+    if (!this.progress.total) return;
+    for (const c of dots) {
+      this.progress.tested++;
+      if (c === '.') this.progress.killed++;
+      else if (c === 'S') this.progress.survived++;
+      else this.progress.timeout++;
+    }
+  }
+
+  describe(): string | undefined {
+    const p = this.progress;
+    if (!p.total) return undefined;
+    const pct = Math.min(100, Math.round((p.tested / p.total) * 100));
+    let eta = '';
+    if (p.tested > 0 && p.tested < p.total) {
+      const remainingMs = ((Date.now() - this.startedAt) / p.tested) * (p.total - p.tested);
+      eta = `, ETA ~${formatDuration(remainingMs)}`;
+    }
+    return `Stryker tested ${p.tested}/${p.total} mutants (${pct}%): ${p.killed} killed, ${p.survived} survived, ${p.timeout} timeout${eta}`;
+  }
+}
+
 export interface StrykerRunResult {
   report?: MutationReport;
   error?: string;
 }
 
-export async function runStryker(repo: string, configFile: string, outDir: string, logFile: string, timeoutMs: number): Promise<StrykerRunResult> {
+export async function runStryker(
+  repo: string,
+  configFile: string,
+  outDir: string,
+  logFile: string,
+  timeoutMs: number,
+  concurrency?: number,
+  onChunk?: (chunk: string) => void,
+): Promise<StrykerRunResult> {
   const env = { DOTNET_CLI_TELEMETRY_OPTOUT: '1', DOTNET_NOLOGO: '1' };
   const restore = await run('dotnet', ['tool', 'restore'], { cwd: repo, logFile, timeoutMs: 10 * 60_000, env });
   if (restore.code !== 0) return { error: `dotnet tool restore failed:\n${(restore.stdout + restore.stderr).slice(-3000)}` };
@@ -92,8 +180,8 @@ export async function runStryker(repo: string, configFile: string, outDir: strin
   const started = Date.now();
   const r = await run(
     'dotnet',
-    ['stryker', '--config-file', relative(repo, configFile), '--reporter', 'json', '--reporter', 'progress', '--output', outDir],
-    { cwd: repo, logFile, timeoutMs, env },
+    ['stryker', '--config-file', relative(repo, configFile), '--reporter', 'json', '--reporter', 'dots', '--output', outDir, ...(concurrency ? ['--concurrency', String(concurrency)] : [])],
+    { cwd: repo, logFile, timeoutMs, env, onStdoutChunk: onChunk },
   );
   // Prefer our --output dir; fall back to the newest StrykerOutput report written during this run.
   const reports = [

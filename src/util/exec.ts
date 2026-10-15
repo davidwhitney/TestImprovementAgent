@@ -14,6 +14,8 @@ export interface RunOptions {
   /** Tee stdout+stderr to this file. */
   logFile?: string;
   onStdoutLine?: (line: string) => void;
+  /** Raw stdout chunks, for output that is not newline-terminated (e.g. Stryker's dots reporter). */
+  onStdoutChunk?: (chunk: string) => void;
 }
 
 export interface RunResult {
@@ -100,6 +102,7 @@ export function run(command: string, args: string[], opts: RunOptions): Promise<
       resetIdle();
       stdout = append(stdout, chunk);
       log?.write(chunk);
+      opts.onStdoutChunk?.(chunk);
       if (opts.onStdoutLine) {
         pending += chunk;
         const lines = pending.split('\n');

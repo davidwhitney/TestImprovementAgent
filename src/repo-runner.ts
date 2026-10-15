@@ -6,7 +6,7 @@ import type { HarnessConfig } from './config.ts';
 import { renderGaps } from './coverage/cobertura.ts';
 import { renderFailures } from './dotnet/dotnet.ts';
 import { createSolution, findSolution, loadSolution, productionProjects, testProjects, type Solution } from './dotnet/projects.ts';
-import { detectStryker, renderSurvivors, runStryker, type MutationReport } from './dotnet/stryker.ts';
+import { detectStryker, renderSurvivors, runStryker, StrykerProgressTracker, type MutationReport } from './dotnet/stryker.ts';
 import { Git } from './git.ts';
 import { enforceTestOnlyChanges } from './guard.ts';
 import type { ManifestStore, Phase, RepoEntry, RepoStatus } from './manifest.ts';
@@ -64,7 +64,7 @@ export class RepoRunner {
     });
     try {
       await this.prepare();
-      await this.ensureCoverlet();
+      await this.ensureTestProject();
       let green = await this.ensureGreenBaseline();
       green = await this.ensureComponentTests(green);
       green = await this.coverageLoop(green);
@@ -106,8 +106,11 @@ export class RepoRunner {
     const onHarnessBranch = (await this.git.currentBranch()) === this.cfg.branch;
     if (!(await this.git.isClean())) {
       if (!onHarnessBranch) throw new HarnessStop('blocked', `working tree has uncommitted changes on ${await this.git.currentBranch()}; commit or stash them first`);
-      // Leftovers from an interrupted iteration on our own branch: discard them and resume from the last commit.
-      this.log.warn('Discarding uncommitted changes left on the harness branch by an interrupted run');
+      // Leftovers from an interrupted iteration on our own branch: resume from the last commit, but stash
+      // rather than delete them so nothing an interrupted run produced is ever unrecoverable.
+      const message = `coverage-harness: uncommitted work from an interrupted run (${new Date().toISOString()})`;
+      await this.git.stashAll(message);
+      this.log.warn(`Uncommitted changes left on the harness branch by an interrupted run were stashed ("${message}"); recover with \`git stash list\` / \`git stash pop\``);
       await this.git.resetTo(await this.git.head());
     }
     await this.git.ensureBranch(this.cfg.branch);
@@ -127,42 +130,38 @@ export class RepoRunner {
     this.log.info(`Solution ${relative(this.repo, sln)} on branch ${this.cfg.branch}`);
   }
 
-  private async ensureCoverlet(): Promise<void> {
-    const missing = (s: Solution) => testProjects(s).filter((p) => !p.hasCoverletCollector || !p.hasCoverletMsbuild);
+  /** Coverage needs no instrumentation package; the only prerequisite is a test project to run. */
+  private async ensureTestProject(): Promise<void> {
     let solution = await this.solution();
-    if (testProjects(solution).length > 0 && missing(solution).length === 0) return;
+    if (testProjects(solution).length > 0) return;
 
-    await this.setPhase('coverlet');
-    this.log.info('Coverlet missing; dispatching agent to add instrumentation');
+    await this.setPhase('test-project');
+    this.log.info('No test project found; dispatching agent to create one');
     const checkpoint = await this.git.head();
     let previousAttempt = '';
     for (let attempt = 1; attempt <= this.cfg.fixAttempts; attempt++) {
-      const tests = testProjects(solution);
-      await this.runTask('setup-coverlet', `coverlet-${attempt}`, {
+      await this.runTask('create-test-project', `test-project-${attempt}`, {
         projectSummary: this.describeProjects(solution),
-        noTestProjectInstruction:
-          tests.length === 0
-            ? `There are **no test projects**. Create \`${this.componentProjectDir(solution)}\` as an xUnit test project (\`${this.componentProjectName(solution)}\`) targeting the same framework as the application, reference the application project, add \`Microsoft.AspNetCore.Mvc.Testing\` if the app is an ASP.NET Core app, and add it to the solution.`
-            : 'Do not create new test projects in this step.',
+        componentProjectName: this.componentProjectName(solution),
+        componentProjectDir: this.componentProjectDir(solution),
         previousAttempt,
       });
       await this.guard(checkpoint);
       solution = await this.solution();
-      const stillMissing = missing(solution);
-      if (testProjects(solution).length === 0 || stillMissing.length > 0) {
-        previousAttempt = `## Previous attempt\n\nThe harness re-checked and these test projects still lack coverlet.collector/coverlet.msbuild: ${stillMissing.map((p) => p.name).join(', ') || '(no test project found)'}.`;
+      if (testProjects(solution).length === 0) {
+        previousAttempt = '## Previous attempt\n\nThe harness re-checked and still found no test project in the solution.';
         continue;
       }
-      const green = await this.stabilise(checkpoint, 'adding coverlet', `coverlet-${attempt}`);
+      const green = await this.stabilise(checkpoint, 'creating the test project', `test-project-${attempt}`);
       if (green) {
-        await this.commit('chore(test): add coverlet coverage instrumentation');
+        await this.commit('chore(test): add test project');
         return;
       }
       previousAttempt = '## Previous attempt\n\nThe solution did not build/test cleanly after your changes, so they were discarded. Try again, more carefully.';
       await this.reset(checkpoint);
     }
     await this.reset(checkpoint);
-    throw new HarnessStop('blocked', 'could not add coverlet instrumentation');
+    throw new HarnessStop('blocked', 'could not create a test project');
   }
 
   private async ensureGreenBaseline(): Promise<Green> {
@@ -423,10 +422,29 @@ export class RepoRunner {
 
   private async mutationRun(label: string) {
     const setup = detectStryker(this.repo);
-    this.log.info(`[${label}] dotnet stryker (this can take a long time)`);
+    this.log.info(`[${label}] dotnet stryker (this can take a long time; ${this.cfg.strykerConcurrency} parallel runners)`);
     const started = Date.now();
-    const r = await withHeartbeat(this.log, `[${label}] dotnet stryker`, this.cfg.heartbeatMs, () =>
-      runStryker(this.repo, setup.configFile!, join(this.workDir, 'stryker', label), join(this.workDir, 'logs', `${label}.stryker.log`), this.cfg.strykerTimeoutMs),
+    const tracker = new StrykerProgressTracker();
+    let lastMilestone = 0;
+    const onChunk = (chunk: string) => {
+      tracker.push(chunk);
+      const { tested, total } = tracker.progress;
+      const milestone = total ? Math.floor((tested / total) * 10) : 0;
+      if (milestone > lastMilestone) {
+        lastMilestone = milestone;
+        this.log.info(`[${label}] ${tracker.describe()}`);
+        this.log.event('stryker.progress', { label, ...tracker.progress });
+      }
+    };
+    const r = await withHeartbeat(
+      this.log,
+      `[${label}] dotnet stryker`,
+      this.cfg.heartbeatMs,
+      () => runStryker(this.repo, setup.configFile!, join(this.workDir, 'stryker', label), join(this.workDir, 'logs', `${label}.stryker.log`), this.cfg.strykerTimeoutMs, this.cfg.strykerConcurrency, onChunk),
+      () => {
+        const text = tracker.describe();
+        return text ? { at: Date.now(), text } : undefined;
+      },
     );
     this.log.event('stryker', {
       label,
@@ -553,7 +571,7 @@ export class RepoRunner {
   private describeProjects(s: Solution): string {
     const line = (p: Solution['projects'][number]) => {
       const tags = [p.isWeb ? 'ASP.NET Core' : p.isExecutable ? 'executable' : 'library'];
-      if (p.isTest) tags.splice(0, 1, 'test', p.hasCoverletCollector ? 'coverlet.collector ✓' : 'coverlet.collector ✗', p.hasCoverletMsbuild ? 'coverlet.msbuild ✓' : 'coverlet.msbuild ✗');
+      if (p.isTest) tags.splice(0, 1, 'test');
       if (p.hasComponentTests) tags.push('component tests');
       return `- \`${relative(this.repo, p.path)}\` (${tags.join(', ')})`;
     };

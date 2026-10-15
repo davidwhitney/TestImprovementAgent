@@ -13,8 +13,6 @@ export interface DotnetProject {
   isTest: boolean;
   isWeb: boolean;
   isExecutable: boolean;
-  hasCoverletCollector: boolean;
-  hasCoverletMsbuild: boolean;
   hasComponentTests: boolean;
 }
 
@@ -109,8 +107,6 @@ export function classifyProject(projectPath: string, repo: string): DotnetProjec
     isTest,
     isWeb,
     isExecutable,
-    hasCoverletCollector: hasPackageRef(text, 'coverlet.collector'),
-    hasCoverletMsbuild: hasPackageRef(text, 'coverlet.msbuild'),
     hasComponentTests,
   };
 }

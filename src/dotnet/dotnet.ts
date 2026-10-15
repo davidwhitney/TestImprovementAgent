@@ -42,12 +42,16 @@ export async function build(sln: string, logFile: string, timeoutMs: number): Pr
   return { ok: r.code === 0 && !r.timedOut, errors: r.code !== 0 && errors.length === 0 ? [tail(output, 2000)] : errors, outputTail: tail(output) };
 }
 
+const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const escapeXml = (s: string) => s.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
+
 /**
- * Harness-owned runsettings: the agent cannot weaken coverage by editing it, and every test
- * project's own assembly is excluded so only production code counts.
+ * Harness-owned runsettings for the built-in Microsoft code coverage collector (`--collect "Code Coverage"`,
+ * which ships with Microsoft.NET.Test.Sdk, so no extra package is needed). The agent cannot weaken it, and
+ * only production assemblies are instrumented: test projects and third-party packages never count.
  */
-export function writeRunSettings(path: string, testAssemblyNames: string[]): void {
-  const exclude = ['[xunit*]*', '[NUnit*]*', ...testAssemblyNames.map((n) => `[${n}]*`)].join(',');
+export function writeRunSettings(path: string, productionAssemblyNames: string[]): void {
+  const modules = productionAssemblyNames.map((n) => `                <ModulePath>(^|.*[\\/])${escapeXml(escapeRegex(n))}\\.dll$</ModulePath>`).join('\n');
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(
     path,
@@ -55,14 +59,32 @@ export function writeRunSettings(path: string, testAssemblyNames: string[]): voi
 <RunSettings>
   <DataCollectionRunSettings>
     <DataCollectors>
-      <DataCollector friendlyName="XPlat code coverage">
+      <DataCollector friendlyName="Code Coverage">
         <Configuration>
           <Format>cobertura</Format>
-          <Exclude>${exclude}</Exclude>
-          <ExcludeByFile>**/obj/**,**/*.g.cs,**/*.Designer.cs</ExcludeByFile>
-          <ExcludeByAttribute>GeneratedCodeAttribute</ExcludeByAttribute>
-          <IncludeTestAssembly>false</IncludeTestAssembly>
-          <SkipAutoProps>true</SkipAutoProps>
+          <CodeCoverage>
+            <ModulePaths>
+              <Include>
+${modules}
+              </Include>
+            </ModulePaths>
+            <Sources>
+              <Exclude>
+                <Source>.*[\\/]obj[\\/].*</Source>
+                <Source>.*\\.g\\.cs$</Source>
+                <Source>.*\\.Designer\\.cs$</Source>
+              </Exclude>
+            </Sources>
+            <Attributes>
+              <Exclude>
+                <Attribute>^System\\.CodeDom\\.Compiler\\.GeneratedCodeAttribute$</Attribute>
+                <Attribute>^System\\.Runtime\\.CompilerServices\\.CompilerGeneratedAttribute$</Attribute>
+                <Attribute>^System\\.Diagnostics\\.DebuggerHiddenAttribute$</Attribute>
+                <Attribute>^System\\.Diagnostics\\.DebuggerNonUserCodeAttribute$</Attribute>
+                <Attribute>^System\\.Diagnostics\\.CodeAnalysis\\.ExcludeFromCodeCoverageAttribute$</Attribute>
+              </Exclude>
+            </Attributes>
+          </CodeCoverage>
         </Configuration>
       </DataCollector>
     </DataCollectors>
@@ -77,11 +99,11 @@ export async function test(sln: string, opts: { runSettings: string; resultsDir:
   mkdirSync(opts.resultsDir, { recursive: true });
   const r: RunResult = await run(
     'dotnet',
-    ['test', sln, '--no-build', '--nologo', '--settings', opts.runSettings, '--results-directory', opts.resultsDir, '--logger', 'trx', '--collect', 'XPlat Code Coverage'],
+    ['test', sln, '--no-build', '--nologo', '--settings', opts.runSettings, '--results-directory', opts.resultsDir, '--logger', 'trx', '--collect', 'Code Coverage'],
     { cwd: dirname(sln), logFile: opts.logFile, timeoutMs: opts.timeoutMs, env: { DOTNET_CLI_TELEMETRY_OPTOUT: '1', DOTNET_NOLOGO: '1' } },
   );
   const trxFiles = findFiles(opts.resultsDir, (f) => f.endsWith('.trx'), 3);
-  const coberturaFiles = findFiles(opts.resultsDir, (f) => f.endsWith('coverage.cobertura.xml'), 3);
+  const coberturaFiles = findFiles(opts.resultsDir, (f) => f.endsWith('.cobertura.xml'), 3);
   const summary = mergeTrx(trxFiles);
   const output = `${r.stdout}\n${r.stderr}`;
 

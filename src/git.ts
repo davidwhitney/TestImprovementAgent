@@ -79,6 +79,13 @@ export class Git {
     await this.git(['clean', '-fdq']);
   }
 
+  /** Park uncommitted changes (including untracked files) in a recoverable stash. Returns false when there was nothing to save. */
+  async stashAll(message: string): Promise<boolean> {
+    const env = (await this.hasIdentity()) ? undefined : COMMITTER_ENV;
+    const out = await this.git(['stash', 'push', '--include-untracked', '-q', '-m', message], env);
+    return !/No local changes/i.test(out) && (await this.git(['stash', 'list'])).includes(message);
+  }
+
   /** Files changed relative to `sha`, including untracked files, as repo-relative paths. */
   async changedFiles(sha: string): Promise<string[]> {
     const tracked = (await this.git(['diff', '--name-only', sha])).split('\n');

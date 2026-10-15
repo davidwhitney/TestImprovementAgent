@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 export const DEFAULT_PROMPTS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'prompts');
 
 export type PromptName =
-  | 'setup-coverlet'
+  | 'create-test-project'
   | 'scaffold-component-tests'
   | 'raise-coverage'
   | 'fix-build'

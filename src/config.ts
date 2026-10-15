@@ -1,3 +1,4 @@
+import { availableParallelism } from 'node:os';
 import type { AgentName } from './agents/types.ts';
 
 export interface HarnessConfig {
@@ -26,6 +27,8 @@ export interface HarnessConfig {
   buildTimeoutMs: number;
   testTimeoutMs: number;
   strykerTimeoutMs: number;
+  /** Parallel test runners Stryker uses (`--concurrency`); overrides the value in stryker-config.json. */
+  strykerConcurrency: number;
   /** How often long-running steps (agent turns, dotnet test, Stryker) log a "still running" line. 0 disables. */
   heartbeatMs: number;
   skipMutation: boolean;
@@ -47,5 +50,6 @@ export const DEFAULTS = {
   buildTimeoutMinutes: 15,
   testTimeoutMinutes: 30,
   strykerTimeoutMinutes: 240,
+  strykerConcurrency: Math.max(1, Math.floor(availableParallelism() / 2)),
   heartbeatMinutes: 5,
 };

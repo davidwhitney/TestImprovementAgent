@@ -53,6 +53,26 @@ describe('repo discovery and manifest', () => {
   });
 });
 
+describe('interrupted-run recovery', () => {
+  it('stashes uncommitted and untracked work instead of destroying it', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'harness-stash-'));
+    const repo = makeRepo(root, 'app', { 'a.txt': 'one' });
+    const g = new Git(repo);
+    const head = await g.head();
+    writeFileSync(join(repo, 'a.txt'), 'two');
+    writeFileSync(join(repo, 'stryker-config.json'), '{}');
+    assert.equal(await g.stashAll('parked'), true);
+    assert.equal(await g.isClean(), true);
+    assert.equal(await g.head(), head);
+    assert.match(git(repo, 'stash', 'list').toString(), /parked/);
+    git(repo, 'stash', 'pop', '-q');
+    assert.equal(readFileSync(join(repo, 'stryker-config.json'), 'utf8'), '{}');
+    assert.equal(readFileSync(join(repo, 'a.txt'), 'utf8'), 'two');
+    await g.resetTo(head);
+    assert.equal(await g.stashAll('nothing'), false);
+  });
+});
+
 describe('production-code guard', () => {
   it('keeps test changes and allowed hooks, reverts everything else', async () => {
     const root = mkdtempSync(join(tmpdir(), 'harness-guard-'));
@@ -96,7 +116,7 @@ describe('prompts', () => {
     componentProjects: 'x', gaps: 'GAPS', history: '', context: 'x', errors: 'E', notes: '', failures: 'F', testProjects: 'x',
     mutationTarget: 80, mutationScore: 40, survivors: 'S', question: 'Q?',
   };
-  const names: PromptName[] = ['setup-coverlet', 'scaffold-component-tests', 'raise-coverage', 'fix-build', 'fix-tests', 'setup-stryker', 'kill-mutants', 'continue', 'answer'];
+  const names: PromptName[] = ['create-test-project', 'scaffold-component-tests', 'raise-coverage', 'fix-build', 'fix-tests', 'setup-stryker', 'kill-mutants', 'continue', 'answer'];
 
   for (const name of names) {
     it(`renders ${name} with every placeholder and partial resolved`, () => {

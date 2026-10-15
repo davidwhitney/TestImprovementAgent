@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { mergeCobertura, methodLabel, ranges, renderGaps, summarise } from '../src/coverage/cobertura.ts';
 import { extractBuildErrors } from '../src/dotnet/dotnet.ts';
-import { parseMutationReport } from '../src/dotnet/stryker.ts';
+import { parseMutationReport, StrykerProgressTracker } from '../src/dotnet/stryker.ts';
 import { parseTrx } from '../src/dotnet/trx.ts';
 import { parseHarnessReport } from '../src/agents/index.ts';
 
@@ -125,5 +125,17 @@ Work done.
 
   it('returns undefined when there is no block', () => {
     assert.equal(parseHarnessReport('all done!'), undefined);
+  });
+});
+
+describe('stryker progress', () => {
+  it('counts dots reporter output across chunks, ignoring log lines', () => {
+    const t = new StrykerProgressTracker();
+    t.push('[10:54:04 INF] 4 mutants got status Ignored.\n[10:54:04 INF] 10 total mutants will be tes');
+    t.push('ted\n..S.[10:54:09 INF] some log with S and . in it\n');
+    t.push('.T.');
+    t.push('.\nTime Elapsed 00:01\n');
+    assert.deepEqual(t.progress, { total: 10, tested: 8, killed: 6, survived: 1, timeout: 1 });
+    assert.match(t.describe()!, /tested 8\/10 mutants \(80%\): 6 killed, 1 survived, 1 timeout, ETA/);
   });
 });

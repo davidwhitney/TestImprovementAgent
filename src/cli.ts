@@ -44,6 +44,7 @@ Options:
   --agent-idle-timeout <minutes> kill an agent that prints nothing for this long (default ${DEFAULTS.agentIdleTimeoutMinutes})
   --test-timeout <minutes>     (default ${DEFAULTS.testTimeoutMinutes})
   --stryker-timeout <minutes>  (default ${DEFAULTS.strykerTimeoutMinutes})
+  --stryker-concurrency <n>    parallel test runners for Stryker (default ${DEFAULTS.strykerConcurrency} = half the cores)
   --heartbeat <minutes>        log a "still running" line during long steps (default ${DEFAULTS.heartbeatMinutes}, 0 = off)
   --verbose                    also stream agent activity (tool calls, messages) to the console
   --env-file <path>            load settings from this file instead of ./.env
@@ -95,6 +96,7 @@ const OPTIONS = {
   'agent-idle-timeout': { type: 'string' },
   'test-timeout': { type: 'string' },
   'stryker-timeout': { type: 'string' },
+  'stryker-concurrency': { type: 'string' },
   heartbeat: { type: 'string' },
   verbose: { type: 'boolean' },
   'env-file': { type: 'string' },
@@ -178,6 +180,7 @@ async function main(): Promise<number> {
     buildTimeoutMs: DEFAULTS.buildTimeoutMinutes * 60_000,
     testTimeoutMs: minutes(values['test-timeout'], DEFAULTS.testTimeoutMinutes, 'test-timeout'),
     strykerTimeoutMs: minutes(values['stryker-timeout'], DEFAULTS.strykerTimeoutMinutes, 'stryker-timeout'),
+    strykerConcurrency: num(values['stryker-concurrency'], DEFAULTS.strykerConcurrency, 'stryker-concurrency', 1, 256),
     heartbeatMs: num(values.heartbeat, DEFAULTS.heartbeatMinutes, 'heartbeat', 0) * 60_000,
     skipMutation: values['skip-mutation'] ?? false,
     verbose: values.verbose ?? false,

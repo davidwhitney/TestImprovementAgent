@@ -21,8 +21,8 @@ Requires Node ≥ 22.18 (TypeScript runs directly through Node's type stripping,
  │  prepare    │  require a clean tree, check out branch `coverage-harness`
  └─────┬───────┘
        ▼
- ┌─────────────┐  every test project needs coverlet.collector + coverlet.msbuild
- │  coverlet   │  missing → agent: setup-coverlet → verify → commit (1st commit)
+ ┌─────────────┐  no test project at all?
+ │ test-project│  → agent: create-test-project → verify → commit (coverage needs no package)
  └─────┬───────┘
        ▼
  ┌─────────────┐  build + test + coverage; red → fix-build / fix-tests prompts
@@ -56,8 +56,8 @@ Requires Node ≥ 22.18 (TypeScript runs directly through Node's type stripping,
 | Concern | Where | Notes |
 |---|---|---|
 | Repo discovery, manifest | `src/manifest.ts` | `--src dir/*` = every git repo directly inside `dir`. Manifest defaults to `<dir>/coverage-harness.manifest.json`; atomic writes, serialised across parallel workers. |
-| Solution discovery | `src/dotnet/projects.ts` | Shallowest `.sln`/`.slnx`, preferring the repo's name, then the one with most projects. Test projects are classified from their project files (and coverlet references from `Directory.Build.props`). |
-| Build / test | `src/dotnet/dotnet.ts` | `dotnet build`, then `dotnet test --no-build --collect "XPlat Code Coverage" --logger trx` with a **harness-owned runsettings** (agents can't weaken exclusions). |
+| Solution discovery | `src/dotnet/projects.ts` | Shallowest `.sln`/`.slnx`, preferring the repo's name, then the one with most projects. Test projects are classified from their project files. |
+| Build / test | `src/dotnet/dotnet.ts` | `dotnet build`, then `dotnet test --no-build --collect "Code Coverage" --logger trx` using the collector built into Microsoft.NET.Test.Sdk (no coverlet or other package needed), with a **harness-owned runsettings** that instruments production assemblies only and emits Cobertura (agents can't weaken exclusions). |
 | Coverage | `src/coverage/cobertura.ts` | Cobertura reports from every test project are merged per line (max hits). The target is statement (line/sequence-point) coverage. `Program.cs`/`Main` of executable projects is excluded from the target, as allowed; the raw figure is still computed. Gaps are grouped by method (async state machines resolved to their source method). |
 | Test failures | `src/dotnet/trx.ts` | TRX parsed for failing test names, messages and stack traces. |
 | Mutation testing | `src/dotnet/stryker.ts` | `dotnet tool restore` + `dotnet stryker --config-file stryker-config.json --reporter json --output …`; score = (killed + timeout) / (killed + timeout + survived + no coverage). |
@@ -91,7 +91,7 @@ Adding another CLI means implementing `AgentAdapter.invoke()` (one file) and reg
 
 | File | Sent when |
 |---|---|
-| `setup-coverlet.md` | a test project lacks `coverlet.collector`/`coverlet.msbuild`, or there are no test projects at all |
+| `create-test-project.md` | the solution has no test project at all |
 | `scaffold-component-tests.md` | no component test project exists: maps the app's outside edges, builds the `WebApplicationFactory` fixture, stubs and seam-map README |
 | `raise-coverage.md` | each coverage iteration, with the top gaps inline and the history of previous iterations |
 | `fix-build.md` / `fix-tests.md` | the build or tests are red after any agent turn (or at baseline) |
@@ -128,6 +128,7 @@ coverage-harness status --manifest <file>
 | `--fix-attempts` | 3 | fix prompts per red build before reverting |
 | `--agent-timeout` / `--agent-idle-timeout` | 90 / 20 min | |
 | `--test-timeout` / `--stryker-timeout` | 30 / 240 min | |
+| `--stryker-concurrency` | half the cores | parallel test runners for Stryker (overrides `concurrency` in `stryker-config.json`) |
 | `--heartbeat` | 5 min | log a "still running" line during long agent/test/Stryker steps (0 = off) |
 | `--verbose` | off | also stream agent activity (tool calls, messages) to the console; it is always in the log files |
 | `--env-file` | `./.env` | settings file (see below) |
@@ -147,6 +148,8 @@ Everything is logged to files whether or not `--verbose` is on:
 | `<repo>/.coverage-harness/harness.log`, `events.jsonl` | The same, for one repo. |
 | `<repo>/.coverage-harness/logs/` | Each prompt sent (`*.prompt.md`), raw agent transcript (`*.agent.log`), and dotnet/Stryker output. |
 
+Stryker runs report live progress too: the `dots` reporter is parsed into `Stryker tested 1200/4484 mutants (27%): … ETA ~1h10m`, logged at every 10% and in each heartbeat (`stryker.progress` events).
+
 Heartbeats name the agent's last action and how long ago it happened, so a stuck agent stands out:
 
 ```
@@ -161,7 +164,7 @@ jq -c 'select(.type=="iteration.end") | {repo, phase, iteration, outcome, durati
 jq -c 'select(.type=="measure" and .result=="green") | {repo, label, coverage}' repos/coverage-harness.events.jsonl
 ```
 
-Runs are resumable: Ctrl-C kills the agent process tree and saves the manifest, and re-running the same command picks up where it left off. Uncommitted leftovers on the harness branch are discarded, and iteration counts and history come from the manifest.
+Runs are resumable: Ctrl-C kills the agent process tree and saves the manifest, and re-running the same command picks up where it left off. Uncommitted leftovers on the harness branch are stashed (`git stash list`; never deleted), and iteration counts and history come from the manifest.
 
 ### Manifest
 
@@ -178,7 +181,7 @@ Runs are resumable: Ctrl-C kills the agent process tree and saves the manifest, 
 }
 ```
 
-Statuses: `pending`, `in-progress`, `complete`, `stalled` (no progress, or out of iterations), `blocked` (a precondition the agent couldn't fix: dirty tree, broken production build, coverlet/scaffold/Stryker setup failed), `skipped` (no .NET projects), `error`.
+Statuses: `pending`, `in-progress`, `complete`, `stalled` (no progress, or out of iterations), `blocked` (a precondition the agent couldn't fix: dirty tree, broken production build, test-project/scaffold/Stryker setup failed), `skipped` (no .NET projects), `error`.
 
 ## Limitations and known trade-offs
 
