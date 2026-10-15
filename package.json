@@ -1,0 +1,25 @@
+{
+  "name": "dotnet-coverage-harness",
+  "version": "0.1.0",
+  "description": "Meta-harness that drives agentic coding CLIs to raise .NET test coverage and mutation score",
+  "type": "module",
+  "bin": {
+    "coverage-harness": "./bin/coverage-harness.js"
+  },
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "start": "node src/cli.ts",
+    "typecheck": "tsc",
+    "test": "node --test \"test/**/*.test.ts\""
+  },
+  "license": "MIT",
+  "dependencies": {
+    "fast-xml-parser": "^5.11.2"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "typescript": "^7.0.2"
+  }
+}
