@@ -1,5 +1,5 @@
-import { existsSync, readFileSync, rmSync, statSync } from 'node:fs';
-import { isAbsolute, join, relative } from 'node:path';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { isAbsolute, join, relative, sep } from 'node:path';
 import { run } from '../util/exec.ts';
 import { formatDuration } from '../util/log.ts';
 import { findFiles } from './projects.ts';
@@ -163,37 +163,162 @@ export interface StrykerRunResult {
   error?: string;
 }
 
-export async function runStryker(
-  repo: string,
-  configFile: string,
-  outDir: string,
-  logFile: string,
-  timeoutMs: number,
-  concurrency?: number,
-  onChunk?: (chunk: string) => void,
-): Promise<StrykerRunResult> {
-  const env = { DOTNET_CLI_TELEMETRY_OPTOUT: '1', DOTNET_NOLOGO: '1' };
-  const restore = await run('dotnet', ['tool', 'restore'], { cwd: repo, logFile, timeoutMs: 10 * 60_000, env });
-  if (restore.code !== 0) return { error: `dotnet tool restore failed:\n${(restore.stdout + restore.stderr).slice(-3000)}` };
+export interface StrykerRunOptions {
+  repo: string;
+  configFile: string;
+  outDir: string;
+  logFile: string;
+  /** Per Stryker invocation (per shard when sharded). */
+  timeoutMs: number;
+  concurrency?: number;
+  onChunk?: (chunk: string) => void;
+  /** Mutate only these projects' source, split into resumable shards. Omit to run one unsharded Stryker. */
+  shards?: ShardPlan;
+  onShard?: (index: number, total: number, shard: StrykerShard, cached: boolean) => void;
+}
 
-  rmSync(outDir, { recursive: true, force: true });
-  const started = Date.now();
-  const r = await run(
-    'dotnet',
-    ['stryker', '--config-file', relative(repo, configFile), '--reporter', 'json', '--reporter', 'dots', '--output', outDir, ...(concurrency ? ['--concurrency', String(concurrency)] : [])],
-    { cwd: repo, logFile, timeoutMs, env, onStdoutChunk: onChunk },
-  );
+/** Directories mutation testing skips by default: plain data, wiring and generated code produce mostly noise. */
+export const DEFAULT_MUTATE_EXCLUDES = ['obj', 'bin', 'Migrations', 'Models', 'Configuration', 'HealthChecks', 'Program.cs'];
+
+export interface StrykerShard {
+  id: string;
+  /** `--mutate` patterns: includes for this shard plus the shared excludes. */
+  globs: string[];
+  files: number;
+  lines: number;
+}
+
+export interface ShardPlan {
+  /** Identifies the code under test; completed shards are reused only while it is unchanged. */
+  fingerprint: string;
+  cacheDir: string;
+  shards: StrykerShard[];
+}
+
+const isExcluded = (rel: string, excludes: string[]) => rel.split(sep).some((part) => excludes.includes(part));
+
+const countLines = (file: string) => readFileSync(file, 'utf8').split('\n').length;
+
+/**
+ * Splits production source into `count` roughly equal shards (by line count), largest first.
+ * Directories are the unit of splitting; one that is bigger than a shard is split by its subdirectories.
+ */
+export function planShards(projectDirs: string[], count: number, excludes: string[] = DEFAULT_MUTATE_EXCLUDES): StrykerShard[] {
+  interface Unit { glob: string; files: number; lines: number }
+  const units: Unit[] = [];
+  const measureDir = (dir: string): { files: number; lines: number; subdirs: string[]; direct: { files: number; lines: number } } => {
+    const total = { files: 0, lines: 0 };
+    const direct = { files: 0, lines: 0 };
+    const subdirs: string[] = [];
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      if (excludes.includes(e.name)) continue;
+      const full = join(dir, e.name);
+      if (e.isDirectory()) {
+        subdirs.push(full);
+        const sub = measureDir(full);
+        total.files += sub.files;
+        total.lines += sub.lines;
+      } else if (e.name.endsWith('.cs')) {
+        const lines = countLines(full);
+        direct.files++;
+        direct.lines += lines;
+        total.files++;
+        total.lines += lines;
+      }
+    }
+    return { ...total, subdirs, direct };
+  };
+
+  const all = projectDirs.map((d) => measureDir(d));
+  const grandTotal = all.reduce((n, m) => n + m.lines, 0);
+  const cap = Math.max(1, Math.ceil(grandTotal / Math.max(1, count)));
+
+  const add = (dir: string, projectDir: string, isRoot: boolean) => {
+    const m = measureDir(dir);
+    if (m.files === 0) return;
+    const rel = relative(projectDir, dir).split(sep).join('/');
+    if (m.lines > cap && m.subdirs.length > 0) {
+      if (m.direct.files > 0) units.push({ glob: isRoot ? '*.cs' : `**/${rel}/*.cs`, ...m.direct });
+      for (const sub of m.subdirs) add(sub, projectDir, false);
+    } else {
+      units.push({ glob: isRoot ? '**/*.cs' : `**/${rel}/**/*.cs`, files: m.files, lines: m.lines });
+    }
+  };
+  for (const dir of projectDirs) add(dir, dir, true);
+
+  const n = Math.max(1, Math.min(count, units.length));
+  const bins = Array.from({ length: n }, () => ({ units: [] as Unit[], lines: 0, files: 0 }));
+  for (const u of units.sort((a, b) => b.lines - a.lines)) {
+    const bin = bins.reduce((lo, b) => (b.lines < lo.lines ? b : lo));
+    bin.units.push(u);
+    bin.lines += u.lines;
+    bin.files += u.files;
+  }
+  const exclusions = excludes.map((e) => (e.endsWith('.cs') ? `!**/${e}` : `!**/${e}/**`));
+  return bins
+    .filter((b) => b.units.length > 0)
+    .sort((a, b) => b.lines - a.lines)
+    .map((b, i) => ({ id: `shard-${i + 1}`, globs: [...b.units.map((u) => u.glob), ...exclusions], files: b.files, lines: b.lines }));
+}
+
+/** Combines per-shard reports (they cover disjoint files) into a single report document. */
+export function mergeReports(jsons: string[]): string {
+  const docs = jsons.map((j) => JSON.parse(j) as { files?: Record<string, unknown> });
+  const merged = { ...docs[0], files: Object.assign({}, ...docs.map((d) => d.files ?? {})) };
+  return JSON.stringify(merged);
+}
+
+function findReport(outDir: string, repo: string, since: number): string | undefined {
   // Prefer our --output dir; fall back to the newest StrykerOutput report written during this run.
   const reports = [
     ...findFiles(outDir, (f) => f.endsWith('mutation-report.json'), 4),
     ...findFiles(repo, (f) => f.endsWith('mutation-report.json') && f.includes('StrykerOutput'), 8),
-  ].filter((f) => statSync(f).mtimeMs >= started - 1000);
-  const newest = reports.sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)[0];
-  if (!newest) {
-    const why = r.timedOut ? `Stryker timed out after ${Math.round(timeoutMs / 60000)} minutes.` : `Stryker exited with code ${r.code} and produced no mutation-report.json.`;
-    return { error: `${why}\n${(r.stdout + r.stderr).slice(-4000)}` };
+  ].filter((f) => statSync(f).mtimeMs >= since - 1000);
+  return reports.sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)[0];
+}
+
+async function strykerOnce(o: StrykerRunOptions, outDir: string, mutate: string[]): Promise<{ file?: string; error?: string }> {
+  const env = { DOTNET_CLI_TELEMETRY_OPTOUT: '1', DOTNET_NOLOGO: '1' };
+  rmSync(outDir, { recursive: true, force: true });
+  const started = Date.now();
+  const args = ['stryker', '--config-file', relative(o.repo, o.configFile), '--reporter', 'json', '--reporter', 'dots', '--output', outDir];
+  if (o.concurrency) args.push('--concurrency', String(o.concurrency));
+  for (const m of mutate) args.push('--mutate', m);
+  const r = await run('dotnet', args, { cwd: o.repo, logFile: o.logFile, timeoutMs: o.timeoutMs, env, onStdoutChunk: o.onChunk });
+  const file = findReport(outDir, o.repo, started);
+  if (file) return { file };
+  const why = r.timedOut ? `Stryker timed out after ${Math.round(o.timeoutMs / 60000)} minutes.` : `Stryker exited with code ${r.code} and produced no mutation-report.json.`;
+  return { error: `${why}\n${(r.stdout + r.stderr).slice(-4000)}` };
+}
+
+export async function runStryker(o: StrykerRunOptions): Promise<StrykerRunResult> {
+  const env = { DOTNET_CLI_TELEMETRY_OPTOUT: '1', DOTNET_NOLOGO: '1' };
+  const restore = await run('dotnet', ['tool', 'restore'], { cwd: o.repo, logFile: o.logFile, timeoutMs: 10 * 60_000, env });
+  if (restore.code !== 0) return { error: `dotnet tool restore failed:\n${(restore.stdout + restore.stderr).slice(-3000)}` };
+
+  if (!o.shards) {
+    const r = await strykerOnce(o, o.outDir, []);
+    return r.file ? { report: parseMutationReport(readFileSync(r.file, 'utf8'), o.repo, r.file) } : { error: r.error };
   }
-  return { report: parseMutationReport(readFileSync(newest, 'utf8'), repo, newest) };
+
+  const { shards, cacheDir, fingerprint } = o.shards;
+  const reports: string[] = [];
+  for (const [i, shard] of shards.entries()) {
+    const dir = join(cacheDir, fingerprint, shard.id);
+    const done = join(dir, 'mutation-report.json');
+    const cached = existsSync(done);
+    o.onShard?.(i, shards.length, shard, cached);
+    if (!cached) {
+      const r = await strykerOnce(o, dir, shard.globs);
+      if (!r.file) return { error: `${shard.id}/${shards.length} failed (completed shards are kept and reused on the next run): ${r.error}` };
+      if (r.file !== done) writeFileSync(done, readFileSync(r.file));
+    }
+    reports.push(readFileSync(done, 'utf8'));
+  }
+  mkdirSync(o.outDir, { recursive: true });
+  const merged = join(o.outDir, 'mutation-report.json');
+  writeFileSync(merged, mergeReports(reports));
+  return { report: parseMutationReport(readFileSync(merged, 'utf8'), o.repo, merged) };
 }
 
 export function renderSurvivors(report: MutationReport, limit = 40): string {

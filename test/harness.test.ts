@@ -111,22 +111,16 @@ describe('production-code guard', () => {
 
 describe('coverage runsettings', () => {
   const dir = mkdtempSync(join(tmpdir(), 'cov-'));
-  const assemblies = { production: ['App.Core'], test: ['App.Tests'] };
+  const assemblies = { production: ['App.Core'] };
 
   it('targets the Microsoft collector and includes only production assemblies', () => {
-    writeRunSettings(join(dir, 'ms.xml'), 'microsoft', assemblies);
+    writeRunSettings(join(dir, 'ms.xml'), assemblies);
     const xml = readFileSync(join(dir, 'ms.xml'), 'utf8');
     assert.match(xml, /friendlyName="Code Coverage"/);
     assert.match(xml, /App\\\.Core/);
     assert.doesNotMatch(xml, /App\.Tests/);
   });
 
-  it('targets coverlet and excludes test assemblies', () => {
-    writeRunSettings(join(dir, 'cl.xml'), 'coverlet', assemblies);
-    const xml = readFileSync(join(dir, 'cl.xml'), 'utf8');
-    assert.match(xml, /friendlyName="XPlat code coverage"/);
-    assert.match(xml, /\[App\.Tests\]\*/);
-  });
 });
 
 describe('prompts', () => {
@@ -137,7 +131,7 @@ describe('prompts', () => {
     componentProjects: 'x', gaps: 'GAPS', history: '', plan: 'PLAN', branchesNeeded: 100, sessionGoal: 30, context: 'x', errors: 'E', notes: '', failures: 'F', testProjects: 'x',
     mutationTarget: 80, mutationScore: 40, survivors: 'S', question: 'Q?',
   };
-  const names: PromptName[] = ['create-test-project', 'setup-coverlet', 'scaffold-component-tests', 'raise-coverage', 'triage-coverage', 'fix-build', 'fix-tests', 'setup-stryker', 'kill-mutants', 'continue', 'answer'];
+  const names: PromptName[] = ['create-test-project', 'scaffold-component-tests', 'raise-coverage', 'triage-coverage', 'fix-build', 'fix-tests', 'setup-stryker', 'kill-mutants', 'continue', 'answer'];
 
   for (const name of names) {
     it(`renders ${name} with every placeholder and partial resolved`, () => {

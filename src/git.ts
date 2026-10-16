@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, appendFileSync, mkdirSync, rmSync } from 'node:fs';
 import { dirname, isAbsolute, join } from 'node:path';
 import { run, runChecked } from './util/exec.ts';
@@ -37,6 +38,14 @@ export class Git {
 
   async head(): Promise<string> {
     return (await this.git(['rev-parse', 'HEAD'])).trim();
+  }
+
+  /** Identifies the exact code state: HEAD plus any uncommitted changes. */
+  async fingerprint(): Promise<string> {
+    const diff = await this.git(['diff', 'HEAD']);
+    const untracked = (await this.git(['ls-files', '--others', '--exclude-standard'])).trim();
+    const hash = createHash('sha1').update(diff).update(untracked).digest('hex').slice(0, 8);
+    return `${(await this.head()).slice(0, 12)}-${hash}`;
   }
 
   async hasCommits(): Promise<boolean> {

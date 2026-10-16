@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { loadCoverage, renderGaps, type CoverageReport } from './coverage/cobertura.ts';
-import { build, renderFailures, test, writeRunSettings, type CoverageTool } from './dotnet/dotnet.ts';
+import { build, renderFailures, test, writeRunSettings } from './dotnet/dotnet.ts';
 import { entryPointFiles, loadSolution, productionProjects, testProjects, type Solution } from './dotnet/projects.ts';
 import type { TestSummary } from './dotnet/trx.ts';
 import { withHeartbeat, type Logger } from './util/log.ts';
@@ -17,7 +17,6 @@ export interface MeasureOptions {
   workDir: string;
   buildTimeoutMs: number;
   testTimeoutMs: number;
-  coverageTool: CoverageTool;
   log: Logger;
   /** Log a "still running" line this often during build/test (0 disables). */
   heartbeatMs?: number;
@@ -45,13 +44,10 @@ export async function measure(opts: MeasureOptions, label: string): Promise<Meas
   }
 
   const runSettings = join(workDir, 'coverage.runsettings');
-  writeRunSettings(runSettings, opts.coverageTool, {
-    production: productionProjects(solution).map((p) => p.assemblyName),
-    test: testProjects(solution).map((p) => p.assemblyName),
-  });
-  log.info(`[${label}] dotnet test (${opts.coverageTool} coverage)`);
+  writeRunSettings(runSettings, { production: productionProjects(solution).map((p) => p.assemblyName) });
+  log.info(`[${label}] dotnet test (coverage)`);
   const t = await withHeartbeat(log, `[${label}] dotnet test`, heartbeat, () =>
-    test(opts.solutionPath, { tool: opts.coverageTool, runSettings, resultsDir: join(workDir, 'runs', label), logFile, timeoutMs: opts.testTimeoutMs }),
+    test(opts.solutionPath, { runSettings, resultsDir: join(workDir, 'runs', label), logFile, timeoutMs: opts.testTimeoutMs }),
   );
   if (!t.ok) {
     log.event('measure', {
@@ -70,7 +66,7 @@ export async function measure(opts: MeasureOptions, label: string): Promise<Meas
   }
 
   if (t.coberturaFiles.length === 0) {
-    const infrastructureError = `dotnet test passed but produced no Cobertura coverage report. Every test project needs ${opts.coverageTool === 'coverlet' ? 'the coverlet.collector package' : 'a recent Microsoft.NET.Test.Sdk (17.x or later), which carries the code coverage collector'}, and the production assemblies must be built with symbols (DebugType portable or full).`;
+    const infrastructureError = `dotnet test passed but produced no Cobertura coverage report. Every test project needs a recent Microsoft.NET.Test.Sdk (17.x or later), which carries the code coverage collector, and the production assemblies must be built with symbols (DebugType portable or full).`;
     log.event('measure', { label, result: 'tests-failed', infrastructureError, durationMs: Date.now() - started });
     writeFileSync(join(workDir, 'failing-tests.md'), `# Failing tests\n\n\`\`\`\n${infrastructureError}\n\`\`\`\n`);
     log.warn(`[${label}] no coverage report produced`);

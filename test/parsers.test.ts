@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { mergeCobertura, methodLabel, ranges, renderGaps, summarise } from '../src/coverage/cobertura.ts';
 import { extractBuildErrors } from '../src/dotnet/dotnet.ts';
-import { parseMutationReport, StrykerProgressTracker } from '../src/dotnet/stryker.ts';
+import { mergeReports, parseMutationReport, planShards, StrykerProgressTracker } from '../src/dotnet/stryker.ts';
 import { parseTrx } from '../src/dotnet/trx.ts';
 import { parseHarnessReport } from '../src/agents/index.ts';
 
@@ -153,5 +156,31 @@ describe('stryker progress', () => {
     t.push('.\nTime Elapsed 00:01\n');
     assert.deepEqual(t.progress, { total: 10, tested: 8, killed: 6, survived: 1, timeout: 1 });
     assert.match(t.describe()!, /tested 8\/10 mutants \(80%\): 6 killed, 1 survived, 1 timeout, ETA/);
+  });
+});
+
+describe('Stryker sharding', () => {
+  it('splits source into balanced shards, skipping excluded directories', () => {
+    const proj = mkdtempSync(join(tmpdir(), 'shards-'));
+    const write = (rel: string, lines: number) => {
+      mkdirSync(join(proj, rel, '..'), { recursive: true });
+      writeFileSync(join(proj, rel), 'x\n'.repeat(lines));
+    };
+    write('Core/Payments/A.cs', 100);
+    write('Core/Accounts/B.cs', 100);
+    write('Controllers/C.cs', 50);
+    write('Models/D.cs', 500);
+    write('Program.cs', 500);
+    const shards = planShards([proj], 2);
+    assert.equal(shards.length, 2);
+    assert.equal(shards.reduce((n, s) => n + s.files, 0), 3);
+    assert.ok(shards[0]!.lines >= shards[1]!.lines);
+    assert.ok(shards.every((s) => s.globs.includes('!**/Models/**') && s.globs.includes('!**/Program.cs')));
+    assert.ok(shards.flatMap((s) => s.globs).some((g) => g.includes('Payments')));
+  });
+
+  it('merges per-shard reports into one', () => {
+    const merged = JSON.parse(mergeReports([JSON.stringify({ schemaVersion: '1', files: { 'a.cs': { mutants: [] } } }), JSON.stringify({ files: { 'b.cs': { mutants: [] } } })]));
+    assert.deepEqual(Object.keys(merged.files), ['a.cs', 'b.cs']);
   });
 });

@@ -61,7 +61,7 @@ Requires Node ≥ 22.18 (TypeScript runs directly through Node's type stripping,
 |---|---|---|
 | Repo discovery, manifest | `src/manifest.ts` | `--src dir/*` = every git repo directly inside `dir`. Manifest defaults to `<dir>/coverage-harness.manifest.json`; atomic writes, serialised across parallel workers. |
 | Solution discovery | `src/dotnet/projects.ts` | Shallowest `.sln`/`.slnx`, preferring the repo's name, then the one with most projects. Test projects are classified from their project files. |
-| Build / test | `src/dotnet/dotnet.ts` | `dotnet build`, then `dotnet test --no-build --collect "Code Coverage" --logger trx` with a **harness-owned runsettings** that emits Cobertura (agents can't weaken exclusions). Two coverage strategies, chosen with `--coverage-tool`: `microsoft` (default; `--collect "Code Coverage"`, built into Microsoft.NET.Test.Sdk, no extra package, only production assemblies instrumented) and `coverlet` (`--collect "XPlat code coverage"`; the harness has the agent add `coverlet.collector` to any test project missing it). Numbers from different tools differ, so switching tool restarts the coverage baseline. |
+| Build / test | `src/dotnet/dotnet.ts` | `dotnet build`, then `dotnet test --no-build --collect "Code Coverage" --logger trx` with a **harness-owned runsettings** that emits Cobertura (agents can't weaken exclusions). Coverage uses the Microsoft collector built into Microsoft.NET.Test.Sdk (no extra package; only production assemblies are instrumented). |
 | Coverage | `src/coverage/cobertura.ts` | Cobertura reports from every test project are merged per line (max hits). The target is branch coverage, and statement coverage is reported alongside it everywhere (iteration logs, commit messages, events, the status table, the manifest); manifests recorded before the switch have their coverage baseline restarted. `Program.cs`/`Main` of executable projects is excluded from the target, as allowed; the raw figure is still computed. Gaps are grouped by method (async state machines resolved to their source method). |
 | Test failures | `src/dotnet/trx.ts` | TRX parsed for failing test names, messages and stack traces. |
 | Mutation testing | `src/dotnet/stryker.ts` | `dotnet tool restore` + `dotnet stryker --config-file stryker-config.json --reporter json --output …`; score = (killed + timeout) / (killed + timeout + survived + no coverage). |
@@ -126,7 +126,7 @@ coverage-harness status --manifest <file>
 | `--model` | CLI default | passed through to the agent |
 | `--mutation-target` | 80 | mutation score % required to mark a repo done |
 | `--skip-triage` | off | skip the planning step; the loop just takes the largest gaps |
-| `--skip-mutation` | off | finish once coverage is met |
+| `--mutation` | off | after coverage is met, also run mutation testing with Stryker (can take many hours on large codebases) |
 | `--concurrency` | 1 | repos processed in parallel |
 | `--retry` | off | re-run repos that are `blocked` / `stalled` / `error` |
 | `--max-iterations` / `--max-mutation-iterations` | 40 / 20 | |
@@ -134,15 +134,16 @@ coverage-harness status --manifest <file>
 | `--fix-attempts` | 3 | fix prompts per red build before reverting |
 | `--agent-timeout` / `--agent-idle-timeout` | 90 / 20 min | |
 | `--test-timeout` / `--stryker-timeout` | 30 / 240 min | |
-| `--coverage-tool` | `microsoft` | how coverage is recorded: `microsoft` or `coverlet` |
 | `--stryker-concurrency` | half the cores | parallel test runners for Stryker (overrides `concurrency` in `stryker-config.json`) |
+| `--stryker-shards` | 1 (off) | with `--mutation`, split mutation testing into balanced shards by directory, largest first. Each finished shard is saved (keyed by the code's git state) and reused if the run is interrupted or retried; reports are merged. `--stryker-timeout` applies per shard. 1 = one normal run |
+| `--stryker-exclude` | | extra directory/file names to skip mutating, on top of `Models`, `Configuration`, `HealthChecks`, `Migrations`, `Program.cs`, `obj`, `bin` |
 | `--heartbeat` | 5 min | log a "still running" line during long agent/test/Stryker steps (0 = off) |
 | `--verbose` | off | also stream agent activity (tool calls, messages) to the console; it is always in the log files |
 | `--env-file` | `./.env` | settings file (see below) |
 
 ### Settings from the environment / `.env`
 
-Every option can also be set as `COVERAGE_HARNESS_<OPTION>`, with hyphens becoming underscores (`COVERAGE_HARNESS_MAX_ITERATIONS=60`, `COVERAGE_HARNESS_SKIP_MUTATION=true`). `./.env` is loaded automatically when present, or pass `--env-file <path>`. Precedence: command-line flag > real environment variable > `.env` file > default. Other variables in the file (API keys, tokens) are passed through to the agent CLIs. See `.env.example`.
+Every option can also be set as `COVERAGE_HARNESS_<OPTION>`, with hyphens becoming underscores (`COVERAGE_HARNESS_MAX_ITERATIONS=60`, `COVERAGE_HARNESS_MUTATION=true`). `./.env` is loaded automatically when present, or pass `--env-file <path>`. Precedence: command-line flag > real environment variable > `.env` file > default. Other variables in the file (API keys, tokens) are passed through to the agent CLIs. See `.env.example`.
 
 ### Observing long runs
 

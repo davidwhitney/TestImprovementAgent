@@ -31,7 +31,6 @@ export interface RepoEntry {
   statementCoverage?: number;
   coverageMetric?: 'branch';
   /** The collector that produced `coverage`; numbers from different tools are not comparable. */
-  coverageTool?: 'microsoft' | 'coverlet';
   mutationScore?: number;
   iterations: { coverage: number; mutation: number };
   agentInvocations: number;

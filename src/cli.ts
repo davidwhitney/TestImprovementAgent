@@ -6,7 +6,6 @@ import type { AgentName } from './agents/types.ts';
 import { DEFAULTS, type HarnessConfig } from './config.ts';
 import { applyEnvDefaults, envNameFor, loadDotEnv } from './env.ts';
 import { formatUsage } from './agents/types.ts';
-import { COVERAGE_TOOLS, type CoverageTool } from './dotnet/dotnet.ts';
 import { findSolution } from './dotnet/projects.ts';
 import { defaultManifestPath, discoverRepos, ManifestStore, type RepoEntry } from './manifest.ts';
 import { measure } from './measure.ts';
@@ -33,7 +32,7 @@ Options:
   --model <name>               model passed to the agent CLI
   --mutation-target <percent>  mutation score to reach (default ${DEFAULTS.mutationTarget})
   --skip-triage                skip the agent planning step that orders coverage gaps quick-wins-first
-  --skip-mutation              stop once coverage is met
+  --mutation                   after coverage is met, also run mutation testing with Stryker (off by default)
   --manifest <file>            manifest path (default <src dir>/coverage-harness.manifest.json)
   --prompts <dir>              directory of prompt overrides (same file names as ./prompts)
   --branch <name>              work branch created in each repo (default ${DEFAULTS.branch})
@@ -47,15 +46,16 @@ Options:
   --agent-idle-timeout <minutes> kill an agent that prints nothing for this long (default ${DEFAULTS.agentIdleTimeoutMinutes})
   --test-timeout <minutes>     (default ${DEFAULTS.testTimeoutMinutes})
   --stryker-timeout <minutes>  (default ${DEFAULTS.strykerTimeoutMinutes})
-  --coverage-tool <tool>       how coverage is recorded: microsoft (built-in collector, default) or coverlet
   --stryker-concurrency <n>    parallel test runners for Stryker (default ${DEFAULTS.strykerConcurrency} = half the cores)
+  --stryker-shards <n>         with --mutation, split Stryker into n resumable shards (default off; e.g. 6)
+  --stryker-exclude <names>    comma-separated directory/file names to skip mutating (added to Models, Configuration, HealthChecks, Migrations, Program.cs)
   --heartbeat <minutes>        log a "still running" line during long steps (default ${DEFAULTS.heartbeatMinutes}, 0 = off)
   --verbose                    also stream agent activity (tool calls, messages) to the console
   --env-file <path>            load settings from this file instead of ./.env
 
 Environment / .env:
   Every option can also be set as COVERAGE_HARNESS_<OPTION> (e.g. ${envNameFor('max-iterations')}=60,
-  ${envNameFor('skip-mutation')}=true). ./.env is loaded automatically if present.
+  ${envNameFor('mutation')}=true). ./.env is loaded automatically if present.
   Precedence: command-line flag > environment variable > .env file > default.
   Other variables in .env (API keys, tokens) are passed through to the agent CLIs.
 
@@ -87,7 +87,7 @@ const OPTIONS = {
   model: { type: 'string' },
   'mutation-target': { type: 'string' },
   'skip-triage': { type: 'boolean' },
-  'skip-mutation': { type: 'boolean' },
+  mutation: { type: 'boolean' },
   manifest: { type: 'string' },
   prompts: { type: 'string' },
   branch: { type: 'string' },
@@ -101,8 +101,9 @@ const OPTIONS = {
   'agent-idle-timeout': { type: 'string' },
   'test-timeout': { type: 'string' },
   'stryker-timeout': { type: 'string' },
-  'coverage-tool': { type: 'string' },
   'stryker-concurrency': { type: 'string' },
+  'stryker-shards': { type: 'string' },
+  'stryker-exclude': { type: 'string' },
   heartbeat: { type: 'string' },
   verbose: { type: 'boolean' },
   'env-file': { type: 'string' },
@@ -143,8 +144,6 @@ async function main(): Promise<number> {
   const { repos, root } = discoverRepos(values.src);
   if (repos.length === 0) fail(`no git repositories found under ${values.src}`);
 
-  const coverageTool = (values['coverage-tool'] ?? DEFAULTS.coverageTool) as CoverageTool;
-  if (!COVERAGE_TOOLS.includes(coverageTool)) fail(`--coverage-tool must be one of ${COVERAGE_TOOLS.join(', ')}`);
 
   if (command === 'measure') {
     for (const repo of repos) {
@@ -154,7 +153,7 @@ async function main(): Promise<number> {
         continue;
       }
       const m = await measure(
-        { repo, solutionPath: sln, workDir: join(repo, '.coverage-harness'), buildTimeoutMs: DEFAULTS.buildTimeoutMinutes * 60_000, testTimeoutMs: minutes(values['test-timeout'], DEFAULTS.testTimeoutMinutes, 'test-timeout'), coverageTool, log: log.child(repo.split('/').pop()!) },
+        { repo, solutionPath: sln, workDir: join(repo, '.coverage-harness'), buildTimeoutMs: DEFAULTS.buildTimeoutMinutes * 60_000, testTimeoutMs: minutes(values['test-timeout'], DEFAULTS.testTimeoutMinutes, 'test-timeout'), log: log.child(repo.split('/').pop()!) },
         'measure',
       );
       if (m.kind !== 'green') log.warn(`${repo}: ${m.kind}`);
@@ -189,11 +188,12 @@ async function main(): Promise<number> {
     buildTimeoutMs: DEFAULTS.buildTimeoutMinutes * 60_000,
     testTimeoutMs: minutes(values['test-timeout'], DEFAULTS.testTimeoutMinutes, 'test-timeout'),
     strykerTimeoutMs: minutes(values['stryker-timeout'], DEFAULTS.strykerTimeoutMinutes, 'stryker-timeout'),
-    coverageTool,
     strykerConcurrency: num(values['stryker-concurrency'], DEFAULTS.strykerConcurrency, 'stryker-concurrency', 1, 256),
+    strykerShards: num(values['stryker-shards'], DEFAULTS.strykerShards, 'stryker-shards', 1, 64),
+    strykerExclude: (values['stryker-exclude'] ?? '').split(',').map((s) => s.trim()).filter(Boolean),
     heartbeatMs: num(values.heartbeat, DEFAULTS.heartbeatMinutes, 'heartbeat', 0) * 60_000,
     skipTriage: values['skip-triage'] ?? false,
-    skipMutation: values['skip-mutation'] ?? false,
+    mutation: values.mutation ?? false,
     verbose: values.verbose ?? false,
   };
 
@@ -216,14 +216,14 @@ async function main(): Promise<number> {
   const prompts = new PromptLibrary(cfg.promptsDir);
   const runnable = new Set(['pending', 'in-progress', ...(values.retry ? ['blocked', 'stalled', 'error'] : [])]);
   const queue = manifest.data.repos.filter((r) => repos.includes(r.path) && runnable.has(r.status));
-  log.info(`${queue.length} repo(s) to process with ${cfg.agent}; target ${cfg.target}% branch coverage${cfg.skipMutation ? '' : `, ${cfg.mutationTarget}% mutation score`}`);
+  log.info(`${queue.length} repo(s) to process with ${cfg.agent}; target ${cfg.target}% branch coverage${cfg.mutation ? `, ${cfg.mutationTarget}% mutation score` : ''}`);
 
   const runStarted = Date.now();
   log.event('run.start', {
     agent: cfg.agent,
     model: cfg.model,
     target: cfg.target,
-    mutationTarget: cfg.skipMutation ? undefined : cfg.mutationTarget,
+    mutationTarget: cfg.mutation ? cfg.mutationTarget : undefined,
     repos: queue.map((r) => r.name),
     concurrency: cfg.concurrency,
   });

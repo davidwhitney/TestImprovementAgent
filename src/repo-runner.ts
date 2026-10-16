@@ -6,7 +6,7 @@ import type { HarnessConfig } from './config.ts';
 import { renderGaps } from './coverage/cobertura.ts';
 import { renderFailures } from './dotnet/dotnet.ts';
 import { createSolution, findSolution, loadSolution, productionProjects, testProjects, type Solution } from './dotnet/projects.ts';
-import { detectStryker, renderSurvivors, runStryker, StrykerProgressTracker, type MutationReport } from './dotnet/stryker.ts';
+import { DEFAULT_MUTATE_EXCLUDES, detectStryker, planShards, renderSurvivors, runStryker, StrykerProgressTracker, type MutationReport, type StrykerShard } from './dotnet/stryker.ts';
 import { Git } from './git.ts';
 import { enforceTestOnlyChanges } from './guard.ts';
 import type { ManifestStore, Phase, RepoEntry, RepoStatus } from './manifest.ts';
@@ -70,8 +70,8 @@ export class RepoRunner {
       let green = await this.ensureGreenBaseline();
       green = await this.ensureComponentTests(green);
       green = await this.coverageLoop(green);
-      if (this.cfg.skipMutation) {
-        this.log.info('Mutation testing skipped (--skip-mutation)');
+      if (!this.cfg.mutation) {
+        this.log.info('Mutation testing is off (enable with --mutation)');
       } else {
         const report = await this.ensureStryker();
         await this.mutationLoop(green, report);
@@ -136,36 +136,6 @@ export class RepoRunner {
   private async ensureTestProject(): Promise<void> {
     const solution = await this.solution();
     if (testProjects(solution).length === 0) await this.createTestProject(solution);
-    if (this.cfg.coverageTool === 'coverlet') await this.ensureCoverlet();
-  }
-
-  private async ensureCoverlet(): Promise<void> {
-    const missing = (s: Solution) => testProjects(s).filter((p) => !p.hasCoverletCollector);
-    let solution = await this.solution();
-    if (missing(solution).length === 0) return;
-
-    await this.setPhase('test-project');
-    this.log.info('coverlet.collector missing from some test projects; dispatching agent to add it');
-    const checkpoint = await this.git.head();
-    let previousAttempt = '';
-    for (let attempt = 1; attempt <= this.cfg.fixAttempts; attempt++) {
-      await this.runTask('setup-coverlet', `coverlet-${attempt}`, { projectSummary: this.describeProjects(solution), previousAttempt });
-      await this.guard(checkpoint);
-      solution = await this.solution();
-      const stillMissing = missing(solution);
-      if (stillMissing.length > 0) {
-        previousAttempt = `## Previous attempt\n\nThe harness re-checked and these test projects still lack coverlet.collector: ${stillMissing.map((p) => p.name).join(', ')}.`;
-        continue;
-      }
-      if (await this.stabilise(checkpoint, 'adding coverlet', `coverlet-${attempt}`)) {
-        await this.commit('chore(test): add coverlet coverage instrumentation');
-        return;
-      }
-      previousAttempt = '## Previous attempt\n\nThe solution did not build/test cleanly after your changes, so they were discarded. Try again, more carefully.';
-      await this.reset(checkpoint);
-    }
-    await this.reset(checkpoint);
-    throw new HarnessStop('blocked', 'could not add coverlet instrumentation');
   }
 
   private async createTestProject(initial: Solution): Promise<void> {
@@ -210,8 +180,7 @@ export class RepoRunner {
     if (await this.git.changedFiles(checkpoint).then((f) => f.length > 0)) await this.commit('test: repair failing tests before raising coverage');
     await this.update((e) => {
       // Manifests from before the switch to branch coverage hold a statement-coverage baseline; restart it.
-      if (e.coverageMetric !== 'branch' || (e.coverageTool && e.coverageTool !== this.cfg.coverageTool)) e.baselineCoverage = undefined;
-      e.coverageTool = this.cfg.coverageTool;
+      if (e.coverageMetric !== 'branch') e.baselineCoverage = undefined;
       e.baselineCoverage ??= green.coverage.branchPercent;
     });
     await this.recordCoverage(green, 'baseline', 0, 'baseline measured');
@@ -520,33 +489,65 @@ export class RepoRunner {
   }
 
   private measure(label: string): Promise<Measurement> {
-    return measure({ repo: this.repo, solutionPath: this.solutionPath, workDir: this.workDir, buildTimeoutMs: this.cfg.buildTimeoutMs, testTimeoutMs: this.cfg.testTimeoutMs, coverageTool: this.cfg.coverageTool, log: this.log, heartbeatMs: this.cfg.heartbeatMs }, label);
+    return measure({ repo: this.repo, solutionPath: this.solutionPath, workDir: this.workDir, buildTimeoutMs: this.cfg.buildTimeoutMs, testTimeoutMs: this.cfg.testTimeoutMs, log: this.log, heartbeatMs: this.cfg.heartbeatMs }, label);
   }
 
   private async mutationRun(label: string) {
     const setup = detectStryker(this.repo);
-    this.log.info(`[${label}] dotnet stryker (this can take a long time; ${this.cfg.strykerConcurrency} parallel runners)`);
+    const solution = await this.solution();
+    const shards = this.cfg.strykerShards > 1
+      ? {
+          fingerprint: await this.git.fingerprint(),
+          cacheDir: join(this.workDir, 'stryker-shards'),
+          shards: planShards(productionProjects(solution).map((p) => p.dir), this.cfg.strykerShards, [...DEFAULT_MUTATE_EXCLUDES, ...this.cfg.strykerExclude]),
+        }
+      : undefined;
+    this.log.info(`[${label}] dotnet stryker (this can take a long time; ${this.cfg.strykerConcurrency} parallel runners${shards ? `, ${shards.shards.length} resumable shards` : ''})`);
     const started = Date.now();
-    const tracker = new StrykerProgressTracker();
+    let tracker = new StrykerProgressTracker();
     let lastMilestone = 0;
+    let shardLabel = '';
+    let announced = false;
     const onChunk = (chunk: string) => {
       tracker.push(chunk);
       const { tested, total } = tracker.progress;
-      const milestone = total ? Math.floor((tested / total) * 10) : 0;
+      if (total && !announced) {
+        announced = true;
+        this.log.info(`[${label}${shardLabel}] Stryker build and coverage capture done; testing ${total} mutants`);
+      }
+      const milestone = total ? Math.floor((tested / total) * 20) : 0;
       if (milestone > lastMilestone) {
         lastMilestone = milestone;
-        this.log.info(`[${label}] ${tracker.describe()}`);
-        this.log.event('stryker.progress', { label, ...tracker.progress });
+        this.log.info(`[${label}${shardLabel}] ${tracker.describe()}`);
+        this.log.event('stryker.progress', { label, shard: shardLabel.trim() || undefined, ...tracker.progress });
       }
+    };
+    const onShard = (i: number, n: number, shard: StrykerShard, cached: boolean) => {
+      tracker = new StrykerProgressTracker();
+      lastMilestone = 0;
+      announced = false;
+      shardLabel = ` ${shard.id}/${n}`;
+      this.log.info(`[${label}] ${shard.id}/${n}: ${shard.files} files, ${shard.lines} lines${cached ? ' (already done, reusing saved result)' : ''}`);
+      this.log.event('stryker.shard', { label, shard: shard.id, index: i + 1, of: n, files: shard.files, lines: shard.lines, cached });
     };
     const r = await withHeartbeat(
       this.log,
       `[${label}] dotnet stryker`,
       this.cfg.heartbeatMs,
-      () => runStryker(this.repo, setup.configFile!, join(this.workDir, 'stryker', label), join(this.workDir, 'logs', `${label}.stryker.log`), this.cfg.strykerTimeoutMs, this.cfg.strykerConcurrency, onChunk),
+      () => runStryker({
+        repo: this.repo,
+        configFile: setup.configFile!,
+        outDir: join(this.workDir, 'stryker', label),
+        logFile: join(this.workDir, 'logs', `${label}.stryker.log`),
+        timeoutMs: this.cfg.strykerTimeoutMs,
+        concurrency: this.cfg.strykerConcurrency,
+        onChunk,
+        shards,
+        onShard,
+      }),
       () => {
         const text = tracker.describe();
-        return text ? { at: Date.now(), text } : undefined;
+        return text ? { at: Date.now(), text: `${shardLabel.trim()} ${text}`.trim() } : undefined;
       },
     );
     this.log.event('stryker', {
@@ -697,7 +698,7 @@ export class RepoRunner {
   private describeProjects(s: Solution): string {
     const line = (p: Solution['projects'][number]) => {
       const tags = [p.isWeb ? 'ASP.NET Core' : p.isExecutable ? 'executable' : 'library'];
-      if (p.isTest) tags.splice(0, 1, 'test', p.hasCoverletCollector ? 'coverlet.collector ✓' : 'coverlet.collector ✗');
+      if (p.isTest) tags[0] = 'test';
       if (p.hasComponentTests) tags.push('component tests');
       return `- \`${relative(this.repo, p.path)}\` (${tags.join(', ')})`;
     };
