@@ -9,6 +9,7 @@ export type PromptName =
   | 'scaffold-component-tests'
   | 'triage-coverage'
   | 'raise-coverage'
+  | 'simplify-tests'
   | 'fix-build'
   | 'fix-tests'
   | 'setup-stryker'

@@ -43,6 +43,11 @@ Requires Node ≥ 22.18 (TypeScript runs directly through Node's type stripping,
  │             │    coverage up → commit; down → reset; flat → stall++
  └─────┬───────┘    stall limit / max iterations → status "stalled"
        ▼
+ ┌─────────────┐  optional (--simplify): loop while a pass removes tests:
+ │  simplify   │    agent: simplify-tests prunes tests outside-in tests make redundant
+ │   loop      │    covered branches fell → reset; fewer tests, none lost → commit
+ └─────┬───────┘
+       ▼
  ┌─────────────┐  no dotnet-stryker tool + root stryker-config.json?
  │  stryker    │  → agent: setup-stryker → trial mutation run → commit
  └─────┬───────┘
@@ -101,6 +106,7 @@ Adding another CLI means implementing `AgentAdapter.invoke()` (one file) and reg
 | `raise-coverage.md` | each coverage iteration, with the top gaps inline, the plan, and the history of previous iterations; works through the plan in order |
 | `fix-build.md` / `fix-tests.md` | the build or tests are red after any agent turn (or at baseline) |
 | `setup-stryker.md` | no Stryker tool manifest or root config |
+| `simplify-tests.md` | each simplification pass (only with `--simplify`): keep outside-in tests as the primary suite, keep unit tests only for significant algorithmic complexity or code unreachable from outside, delete the rest |
 | `kill-mutants.md` | each mutation iteration, with surviving mutants (file, line, mutator, original → replacement) |
 | `continue.md` / `answer.md` | follow-ups within a session |
 | `_rules.md`, `_testing-standards.md`, `_report.md` | partials included in task prompts |
@@ -126,6 +132,8 @@ coverage-harness status --manifest <file>
 | `--model` | CLI default | passed through to the agent |
 | `--mutation-target` | 80 | mutation score % required to mark a repo done |
 | `--skip-triage` | off | skip the planning step; the loop just takes the largest gaps |
+| `--simplify` | off | after coverage is met, prune tests made redundant by outside-in tests, never lowering branch coverage |
+| `--max-simplify-iterations` | 10 | simplification passes per repo |
 | `--mutation` | off | after coverage is met, also run mutation testing with Stryker (can take many hours on large codebases) |
 | `--concurrency` | 1 | repos processed in parallel |
 | `--retry` | off | re-run repos that are `blocked` / `stalled` / `error` |
@@ -192,6 +200,10 @@ Runs are resumable: Ctrl-C kills the agent process tree and saves the manifest, 
 Statuses: `pending`, `in-progress`, `complete`, `stalled` (no progress, or out of iterations), `blocked` (a precondition the agent couldn't fix: dirty tree, broken production build, test-project/scaffold/Stryker setup failed), `skipped` (no .NET projects), `error`.
 
 ### Exiting the long tail
+
+## Simplifying the suite (`--simplify`)
+
+Off by default. After the coverage loop, the agent is asked to prune tests that don't fit the outside-in profile: where an outside-in component test already exercises a path, the unit tests duplicating it go; unit tests stay only for significant algorithmic complexity or code genuinely unreachable from the outside. If a unit test covers branches no component test reaches, the agent first writes the outside-in test that does, then removes the unit test. The judge is branch coverage: the harness re-measures after each pass and **reverts the pass if the number of covered branches falls**. A pass is committed only if the suite got smaller; the loop ends when a pass removes nothing, after `--stall-limit` reverted passes in a row, or at `--max-simplify-iterations`. It never fails the repo. It runs before mutation testing, so a leaner suite also makes Stryker faster.
 
 The coverage and mutation prompts let the agent end a session with `"status": "diminishing-returns"` and a `"reason"` once only expensive long-tail work is left. The signal is not taken on trust. The harness still measures and commits that session's work and records the reason, but ends the loop only if the agent signals on **two consecutive iterations** and **statement coverage has itself reached the target**. A first signal is logged and waits for confirmation (an iteration without it resets the count); a signal while statement coverage is below target is refused and the loop carries on. When accepted, the loop ends cleanly: the repo carries on to the next phase and finishes `complete` with coverage or mutation score below target, rather than grinding on until the stall limit marks it `stalled`.
 

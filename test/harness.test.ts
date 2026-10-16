@@ -128,10 +128,10 @@ describe('prompts', () => {
   const vars = {
     repoPath: '/r', solution: 'App.sln', projectSummary: 'x', noTestProjectInstruction: 'x', previousAttempt: '', coverage: 10, target: 100,
     componentProjectName: 'App.ComponentTests', componentProjectDir: 'tests/App.ComponentTests', iteration: 1, statementCoverage: 5,
-    componentProjects: 'x', gaps: 'GAPS', history: '', plan: 'PLAN', branchesNeeded: 100, sessionGoal: 30, context: 'x', errors: 'E', notes: '', failures: 'F', testProjects: 'x',
+    componentProjects: 'x', branchesCovered: 90, testCount: 12, gaps: 'GAPS', history: '', plan: 'PLAN', branchesNeeded: 100, sessionGoal: 30, context: 'x', errors: 'E', notes: '', failures: 'F', testProjects: 'x',
     mutationTarget: 80, mutationScore: 40, survivors: 'S', question: 'Q?',
   };
-  const names: PromptName[] = ['create-test-project', 'scaffold-component-tests', 'raise-coverage', 'triage-coverage', 'fix-build', 'fix-tests', 'setup-stryker', 'kill-mutants', 'continue', 'answer'];
+  const names: PromptName[] = ['create-test-project', 'scaffold-component-tests', 'raise-coverage', 'simplify-tests', 'triage-coverage', 'fix-build', 'fix-tests', 'setup-stryker', 'kill-mutants', 'continue', 'answer'];
 
   for (const name of names) {
     it(`renders ${name} with every placeholder and partial resolved`, () => {

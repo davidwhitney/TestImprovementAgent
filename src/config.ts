@@ -37,6 +37,9 @@ export interface HarnessConfig {
   heartbeatMs: number;
   /** Skip the planning step that orders coverage gaps quick-wins-first before the coverage loop. */
   skipTriage: boolean;
+  /** After coverage is met, prune tests that outside-in tests make redundant while branch coverage holds. Off by default. */
+  simplify: boolean;
+  maxSimplifyIterations: number;
   /** Run mutation testing (Stryker) once coverage is met. Off by default: it can take many hours on large codebases. */
   mutation: boolean;
   verbose: boolean;
@@ -49,6 +52,7 @@ export const DEFAULTS = {
   concurrency: 1,
   maxCoverageIterations: 40,
   maxMutationIterations: 20,
+  maxSimplifyIterations: 10,
   stallLimit: 3,
   fixAttempts: 3,
   followUps: 2,

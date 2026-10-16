@@ -32,6 +32,8 @@ Options:
   --model <name>               model passed to the agent CLI
   --mutation-target <percent>  mutation score to reach (default ${DEFAULTS.mutationTarget})
   --skip-triage                skip the agent planning step that orders coverage gaps quick-wins-first
+  --simplify                   after coverage is met, prune tests made redundant by outside-in tests, never lowering branch coverage (off by default)
+  --max-simplify-iterations <n> simplification passes per repo (default ${DEFAULTS.maxSimplifyIterations})
   --mutation                   after coverage is met, also run mutation testing with Stryker (off by default)
   --manifest <file>            manifest path (default <src dir>/coverage-harness.manifest.json)
   --prompts <dir>              directory of prompt overrides (same file names as ./prompts)
@@ -88,6 +90,8 @@ const OPTIONS = {
   'mutation-target': { type: 'string' },
   'skip-triage': { type: 'boolean' },
   mutation: { type: 'boolean' },
+  simplify: { type: 'boolean' },
+  'max-simplify-iterations': { type: 'string' },
   manifest: { type: 'string' },
   prompts: { type: 'string' },
   branch: { type: 'string' },
@@ -194,6 +198,8 @@ async function main(): Promise<number> {
     heartbeatMs: num(values.heartbeat, DEFAULTS.heartbeatMinutes, 'heartbeat', 0) * 60_000,
     skipTriage: values['skip-triage'] ?? false,
     mutation: values.mutation ?? false,
+    simplify: values.simplify ?? false,
+    maxSimplifyIterations: num(values['max-simplify-iterations'], DEFAULTS.maxSimplifyIterations, 'max-simplify-iterations', 1),
     verbose: values.verbose ?? false,
   };
 

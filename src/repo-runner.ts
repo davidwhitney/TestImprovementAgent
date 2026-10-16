@@ -70,6 +70,7 @@ export class RepoRunner {
       let green = await this.ensureGreenBaseline();
       green = await this.ensureComponentTests(green);
       green = await this.coverageLoop(green);
+      if (this.cfg.simplify) green = await this.simplifyLoop(green);
       if (!this.cfg.mutation) {
         this.log.info('Mutation testing is off (enable with --mutation)');
       } else {
@@ -332,6 +333,72 @@ export class RepoRunner {
       if (stalls >= this.cfg.stallLimit) throw new HarnessStop('stalled', `no coverage progress in ${stalls} consecutive iterations at ${best.coverage.branchPercent}%`);
     }
     this.log.success(`Branch coverage target met: ${best.coverage.branchPercent}% ≥ ${this.cfg.target}% (statement coverage ${best.coverage.statementPercent}%)`);
+    return best;
+  }
+
+  /**
+   * Optional: ask the agent to prune tests that outside-in tests make redundant. The judge is branch
+   * coverage, which may not fall; a pass that loses branches is reverted. Ends when a pass removes
+   * nothing, when passes keep failing, or at the iteration cap, and never fails the repo.
+   */
+  private async simplifyLoop(start: Green): Promise<Green> {
+    await this.setPhase('simplify');
+    let best = start;
+    let stalls = 0;
+    const startedTests = start.tests.total;
+
+    for (let iteration = 1; iteration <= this.cfg.maxSimplifyIterations; iteration++) {
+      const label = `simplify-${iteration}`;
+      const checkpoint = await this.git.head();
+      const iterationStarted = Date.now();
+      this.log.info(`── Simplify pass ${iteration}/${this.cfg.maxSimplifyIterations}: ${best.tests.total} tests, ${best.coverage.branchCovered} branches covered (${best.coverage.branchPercent}%)`);
+      this.log.event('iteration.start', { phase: 'simplify', iteration, tests: best.tests.total, branchesCovered: best.coverage.branchCovered, coverage: best.coverage.branchPercent, checkpoint });
+
+      const report = await this.runTask('simplify-tests', label, {
+        iteration,
+        coverage: best.coverage.branchPercent,
+        statementCoverage: best.coverage.statementPercent,
+        branchesCovered: best.coverage.branchCovered,
+        testCount: best.tests.total,
+        componentProjects: testProjects(best.solution).filter((p) => p.hasComponentTests).map((p) => `\`${relative(this.repo, p.path)}\``).join(', ') || '(none detected)',
+        history: this.renderHistory('simplify'),
+      });
+      await this.guard(checkpoint);
+      const next = await this.stabilise(checkpoint, `simplify pass ${iteration}`, label);
+
+      let outcome: string;
+      let finished = false;
+      if (!next) {
+        await this.reset(checkpoint);
+        stalls++;
+        outcome = 'reverted: tests could not be made green';
+      } else if (next.coverage.branchCovered < best.coverage.branchCovered) {
+        await this.reset(checkpoint);
+        stalls++;
+        outcome = `reverted: covered branches fell from ${best.coverage.branchCovered} to ${next.coverage.branchCovered}`;
+      } else if (next.tests.total >= best.tests.total) {
+        // Nothing was removed (adding tests does not count as simplifying), so there is nothing to keep.
+        await this.reset(checkpoint);
+        finished = true;
+        outcome = 'no tests removed; suite is as simple as the agent can make it';
+      } else {
+        await this.commit(`test: simplify suite, ${best.tests.total} → ${next.tests.total} tests (branch coverage ${best.coverage.branchPercent}% → ${next.coverage.branchPercent}%)`);
+        outcome = `committed: tests ${best.tests.total} → ${next.tests.total}, branches ${best.coverage.branchCovered} → ${next.coverage.branchCovered} (${next.coverage.branchPercent}%)`;
+        stalls = 0;
+        best = next;
+      }
+      this.noteReport(report);
+      await this.recordCoverage(best, 'simplify', iteration, outcome);
+      this.log.info(`── Simplify pass ${iteration} finished in ${formatDuration(Date.now() - iterationStarted)}: ${outcome}`);
+      this.log.event('iteration.end', { phase: 'simplify', iteration, outcome, tests: best.tests.total, coverage: best.coverage.branchPercent, stalls, durationMs: Date.now() - iterationStarted });
+      if (finished) break;
+      if (stalls >= this.cfg.stallLimit) {
+        this.log.warn(`Simplification stopped after ${stalls} reverted passes in a row`);
+        break;
+      }
+    }
+    if (best.tests.total < startedTests) this.log.success(`Simplified the suite: ${startedTests} → ${best.tests.total} tests, branch coverage ${best.coverage.branchPercent}%`);
+    else this.log.info('Simplification removed no tests');
     return best;
   }
 
