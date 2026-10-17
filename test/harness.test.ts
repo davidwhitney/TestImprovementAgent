@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
-import { writeRunSettings } from '../src/dotnet/dotnet.ts';
+import { findTestHost, testHostArgs, usesTestingPlatform, writeCoverageSettings, writeRunSettings } from '../src/dotnet/dotnet.ts';
 import { Git } from '../src/git.ts';
 import { enforceTestOnlyChanges } from '../src/guard.ts';
 import { discoverRepos, ManifestStore } from '../src/manifest.ts';
@@ -119,6 +119,27 @@ describe('coverage runsettings', () => {
     assert.match(xml, /friendlyName="Code Coverage"/);
     assert.match(xml, /App\\\.Core/);
     assert.doesNotMatch(xml, /App\.Tests/);
+  });
+
+  it('uses Microsoft.Testing.Platform options when global.json selects that runner', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'mtp-'));
+    assert.equal(usesTestingPlatform(repo), false);
+    writeFileSync(join(repo, 'global.json'), '\uFEFF{ "test": { "runner": "Microsoft.Testing.Platform" } }');
+    assert.equal(usesTestingPlatform(repo), true);
+
+    writeCoverageSettings(join(repo, 'cov.xml'), assemblies);
+    assert.match(readFileSync(join(repo, 'cov.xml'), 'utf8'), /^<\?xml[^>]*>\s*<Configuration>\s*<CodeCoverage>[\s\S]*App\\\.Core/);
+
+    const args = testHostArgs({ coverageSettings: 'cov.xml', resultsDir: 'out' });
+    assert.ok(args.includes('--coverage') && args.includes('--report-xunit-trx') && args.includes('cov.xml'));
+    assert.ok(!args.includes('--settings') && !args.includes('--logger') && !args.includes('--collect'));
+
+    const out = join(repo, 'App.Tests/bin/Debug/net10.0');
+    mkdirSync(out, { recursive: true });
+    assert.equal(findTestHost(join(repo, 'App.Tests'), 'App.Tests'), undefined);
+    writeFileSync(join(out, 'App.Tests.dll'), '');
+    writeFileSync(join(out, 'App.Tests.runtimeconfig.json'), '{}');
+    assert.equal(findTestHost(join(repo, 'App.Tests'), 'App.Tests'), join(out, 'App.Tests.dll'));
   });
 
 });

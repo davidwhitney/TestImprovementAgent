@@ -214,6 +214,6 @@ Where the agent CLI reports it, the harness logs usage after every agent turn an
 ## Limitations and known trade-offs
 
 - Equivalent mutants make 100% mutation score unrealistic. Set `--mutation-target` accordingly. Mutants the agent reports as equivalent are recorded in the manifest notes but don't count towards the score; the harness doesn't trust the agent to grade itself.
-- Solutions that opt into the Microsoft.Testing.Platform `dotnet test` mode (via `global.json`) use different CLI arguments and are not handled yet.
+- Solutions that opt into the Microsoft.Testing.Platform `dotnet test` mode (via `global.json`) are handled by building with `-p:UseMicrosoftTestingPlatformRunner=true` and running each test project's executable directly (`--report-xunit-trx --coverage --coverage-output-format cobertura`), because `dotnet test` itself can report "Zero tests ran" there.
 - Repos are processed on a branch in place, so don't work in those clones while the harness runs.
 - OpenCode silently retries forever when its configured provider is unreachable. The idle timeout catches this, but pass `--model provider/model` if your default provider is a local server.

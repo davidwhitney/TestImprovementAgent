@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { loadCoverage, renderGaps, type CoverageReport } from './coverage/cobertura.ts';
-import { build, renderFailures, test, writeRunSettings } from './dotnet/dotnet.ts';
+import { build, renderFailures, test, TESTING_PLATFORM_BUILD_ARGS, usesTestingPlatform, writeCoverageSettings, writeRunSettings } from './dotnet/dotnet.ts';
 import { entryPointFiles, loadSolution, productionProjects, testProjects, type Solution } from './dotnet/projects.ts';
 import type { TestSummary } from './dotnet/trx.ts';
 import { withHeartbeat, type Logger } from './util/log.ts';
@@ -34,8 +34,11 @@ export async function measure(opts: MeasureOptions, label: string): Promise<Meas
   const solution = await loadSolution(opts.solutionPath, repo);
   const logFile = join(workDir, 'logs', `${label}.dotnet.log`);
 
+  const testingPlatform = usesTestingPlatform(dirname(opts.solutionPath));
   log.info(`[${label}] dotnet build`);
-  const b = await withHeartbeat(log, `[${label}] dotnet build`, heartbeat, () => build(opts.solutionPath, logFile, opts.buildTimeoutMs));
+  const b = await withHeartbeat(log, `[${label}] dotnet build`, heartbeat, () =>
+    build(opts.solutionPath, logFile, opts.buildTimeoutMs, testingPlatform ? TESTING_PLATFORM_BUILD_ARGS : []),
+  );
   if (!b.ok) {
     log.event('measure', { label, result: 'build-failed', errors: b.errors.length, firstError: b.errors[0], durationMs: Date.now() - started });
     writeFileSync(join(workDir, 'build-errors.md'), `# Build errors\n\n\`\`\`\n${b.errors.join('\n')}\n\`\`\`\n`);
@@ -44,10 +47,14 @@ export async function measure(opts: MeasureOptions, label: string): Promise<Meas
   }
 
   const runSettings = join(workDir, 'coverage.runsettings');
-  writeRunSettings(runSettings, { production: productionProjects(solution).map((p) => p.assemblyName) });
+  const coverageSettings = join(workDir, 'coverage.settings.xml');
+  const production = { production: productionProjects(solution).map((p) => p.assemblyName) };
+  writeRunSettings(runSettings, production);
+  writeCoverageSettings(coverageSettings, production);
+  const testHosts = testingPlatform ? testProjects(solution).map((p) => ({ dir: p.dir, assemblyName: p.assemblyName, path: p.path })) : undefined;
   log.info(`[${label}] dotnet test (coverage)`);
   const t = await withHeartbeat(log, `[${label}] dotnet test`, heartbeat, () =>
-    test(opts.solutionPath, { runSettings, resultsDir: join(workDir, 'runs', label), logFile, timeoutMs: opts.testTimeoutMs }),
+    test(opts.solutionPath, { runSettings, coverageSettings, testHosts, resultsDir: join(workDir, 'runs', label), logFile, timeoutMs: opts.testTimeoutMs }),
   );
   if (!t.ok) {
     log.event('measure', {

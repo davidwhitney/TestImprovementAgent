@@ -526,6 +526,10 @@ export class RepoRunner {
     let m = await this.measure(label);
     for (let attempt = 1; m.kind !== 'green' && attempt <= this.cfg.fixAttempts; attempt++) {
       const fixLabel = `${label}-fix-${attempt}`;
+      if (m.kind === 'tests-failed' && m.infrastructureError && m.tests.total === 0) {
+        this.log.warn(`No tests ran after ${context}: an environment or runner problem the agent cannot fix by editing tests; see the dotnet log`);
+        return undefined;
+      }
       this.log.warn(`Red after ${context} (${m.kind}); fix attempt ${attempt}/${this.cfg.fixAttempts}`);
       this.log.event('fix.start', { label: fixLabel, attempt, of: this.cfg.fixAttempts, cause: m.kind });
       if (m.kind === 'build-failed') {
